@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  crawler:
+    build: ../crawler
+    container_name: realestate-crawler
+    command: python run.py
+    networks:
+      - hdfs_network
+    volumes:
+      - ../crawler:/app
+
+networks:
+  hdfs_network:

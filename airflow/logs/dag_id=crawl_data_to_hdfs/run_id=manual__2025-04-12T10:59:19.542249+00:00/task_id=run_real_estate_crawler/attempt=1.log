@@ -1,0 +1,17 @@
+[2025-04-12T10:59:19.976+0000] {taskinstance.py:1956} INFO - Dependencies all met for dep_context=non-requeueable deps ti=<TaskInstance: crawl_data_to_hdfs.run_real_estate_crawler manual__2025-04-12T10:59:19.542249+00:00 [queued]>
+[2025-04-12T10:59:19.984+0000] {taskinstance.py:1956} INFO - Dependencies all met for dep_context=requeueable deps ti=<TaskInstance: crawl_data_to_hdfs.run_real_estate_crawler manual__2025-04-12T10:59:19.542249+00:00 [queued]>
+[2025-04-12T10:59:19.984+0000] {taskinstance.py:2170} INFO - Starting attempt 1 of 2
+[2025-04-12T10:59:19.995+0000] {taskinstance.py:2191} INFO - Executing <Task(DockerOperator): run_real_estate_crawler> on 2025-04-12 10:59:19.542249+00:00
+[2025-04-12T10:59:20.004+0000] {standard_task_runner.py:60} INFO - Started process 205 to run task
+[2025-04-12T10:59:20.007+0000] {standard_task_runner.py:87} INFO - Running: ['***', 'tasks', 'run', 'crawl_data_to_hdfs', 'run_real_estate_crawler', 'manual__2025-04-12T10:59:19.542249+00:00', '--job-id', '19', '--raw', '--subdir', 'DAGS_FOLDER/crawl_data_dag.py', '--cfg-path', '/tmp/tmps7cw8lqh']
+[2025-04-12T10:59:20.009+0000] {standard_task_runner.py:88} INFO - Job 19: Subtask run_real_estate_crawler
+[2025-04-12T10:59:20.024+0000] {logging_mixin.py:188} WARNING - /home/***/.local/lib/python3.8/site-packages/***/settings.py:194 DeprecationWarning: The sql_alchemy_conn option in [core] has been moved to the sql_alchemy_conn option in [database] - the old setting has been used, but please update your config.
+[2025-04-12T10:59:20.056+0000] {task_command.py:423} INFO - Running <TaskInstance: crawl_data_to_hdfs.run_real_estate_crawler manual__2025-04-12T10:59:19.542249+00:00 [running]> on host 0b19cf2a3606
+[2025-04-12T10:59:20.127+0000] {taskinstance.py:2480} INFO - Exporting env vars: AIRFLOW_CTX_DAG_OWNER='***' AIRFLOW_CTX_DAG_ID='crawl_data_to_hdfs' AIRFLOW_CTX_TASK_ID='run_real_estate_crawler' AIRFLOW_CTX_EXECUTION_DATE='2025-04-12T10:59:19.542249+00:00' AIRFLOW_CTX_TRY_NUMBER='1' AIRFLOW_CTX_DAG_RUN_ID='manual__2025-04-12T10:59:19.542249+00:00'
+[2025-04-12T10:59:20.143+0000] {docker.py:359} INFO - Starting docker container from image realestate-crawler
+[2025-04-12T10:59:20.146+0000] {docker.py:367} WARNING - Using remote engine or docker-in-docker and mounting temporary volume from host is not supported. Falling back to `mount_tmp_dir=False` mode. You can set `mount_tmp_dir` parameter to False to disable mounting and remove the warning
+[2025-04-12T10:59:24.177+0000] {docker.py:429} INFO - ✅ Crawl thành công: https://example.com
+✅ Ghi lên HDFS thành công: /raw/2025-04-12/10-59-23/example.html
+[2025-04-12T10:59:24.329+0000] {taskinstance.py:1138} INFO - Marking task as SUCCESS. dag_id=crawl_data_to_hdfs, task_id=run_real_estate_crawler, execution_date=20250412T105919, start_date=20250412T105919, end_date=20250412T105924
+[2025-04-12T10:59:24.391+0000] {local_task_job_runner.py:234} INFO - Task exited with return code 0
+[2025-04-12T10:59:24.406+0000] {taskinstance.py:3280} INFO - 0 downstream tasks scheduled from follow-on schedule check
