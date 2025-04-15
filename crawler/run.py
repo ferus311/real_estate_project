@@ -25,7 +25,7 @@ driver.quit()
 print("✅ Crawl thành công:", url)
 
 # Ghi lên HDFS
-client = InsecureClient("http://namenode:9870", user="hdfs")
+client = InsecureClient("http://namenode:9870", user="airflow")
 
 # Lấy ngày giờ hiện tại và tạo đường dẫn thư mục
 current_time = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")  # Định dạng: YYYY-MM-DD/HH-MM-SS

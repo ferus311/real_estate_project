@@ -17,6 +17,6 @@ RUN apt-get update && apt-get install -y \
 # Cài đặt thư viện Python
 WORKDIR /app
 COPY . .
-RUN pip install --no-cache-dir selenium hdfs
+RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["python", "run.py"]
+# CMD ["python", "selenium_crawler/crawl_upto_hdfs.py"]

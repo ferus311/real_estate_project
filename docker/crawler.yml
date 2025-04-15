@@ -4,7 +4,8 @@ services:
   crawler:
     build: ../crawler
     container_name: realestate-crawler
-    command: python run.py
+    # tty: true
+    # stdin_open: true
     networks:
       - hdfs_network
     volumes:
