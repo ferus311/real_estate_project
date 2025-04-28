@@ -32,7 +32,7 @@ HDFS_DIR = "/data/staging/"
 hdfs_client = InsecureClient(HDFS_URL, user="airflow")
 
 CHECKPOINT_FILE = "/tmp/checkpoint.json"
-BATCH_SIZE = 10
+BATCH_SIZE = 50
 buffer = []
 
 
@@ -205,7 +205,7 @@ def crawl_data_multithreaded(start_page, end_page, max_threads=5, force_crawl=Fa
 
 
 if __name__ == "__main__":
-    MAX_THREADS = 5
+    MAX_THREADS = 7
     # Sử dụng argparse để xử lý tham số dòng lệnh
     parser = argparse.ArgumentParser(description="Crawl real estate data.")
     parser.add_argument(
