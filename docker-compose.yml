@@ -1,6 +1,0 @@
-version: '3.8'
-services:
-  include:
-    - ./docker/airflow.yml
-    - ./docker/spark.yml
-    - ./docker/hdfs.yml

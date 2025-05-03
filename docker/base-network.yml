@@ -1,3 +1,0 @@
-networks:
-  hdfs_network:
-    driver: bridge
