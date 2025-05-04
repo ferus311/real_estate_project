@@ -14,7 +14,6 @@ mkdir -p docker/volumes/hdfs/datanode1
 mkdir -p docker/volumes/hdfs/datanode2
 mkdir -p docker/volumes/hdfs/datanode3
 mkdir -p docker/volumes/kafka
-mkdir -p docker/volumes/postgres
 mkdir -p data_processing/airflow/dags
 mkdir -p data_processing/airflow/logs
 mkdir -p data_processing/airflow/plugins

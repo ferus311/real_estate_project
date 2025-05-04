@@ -2,3 +2,4 @@
 **/datanode*
 **/airflow/logs/
 **/tmp/
+**/volumes/postgres/

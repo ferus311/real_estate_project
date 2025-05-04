@@ -3,7 +3,6 @@ from dataclasses import dataclass
 
 @dataclass
 class HouseDetailItem:
-    title: str = None
     short_description: str = None
     price: str = None
     area: str = None
@@ -18,4 +17,5 @@ class HouseDetailItem:
     facade_width: str = None
     road_width: str = None
     floor_count: str = None
+    title: str = None
     description: str = None

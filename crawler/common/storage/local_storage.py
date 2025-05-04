@@ -70,3 +70,28 @@ def load_latest_from_local(prefix="data", file_format="parquet"):
         return pd.read_parquet(latest_file)
     else:
         raise ValueError(f"Unsupported file format: {file_format}")
+
+
+def list_all_house_list_files(prefix="data", file_format="parquet"):
+    os.makedirs(LOCAL_DIR, exist_ok=True)
+    files = [
+        f
+        for f in os.listdir(LOCAL_DIR)
+        if f.startswith(prefix) and f.endswith(f".{file_format}")
+    ]
+    files.sort()  # Tăng dần theo thời gian (nếu tên có timestamp)
+    return [os.path.join(LOCAL_DIR, f) for f in files]
+
+
+def load_links_from_file(path):
+    if path.endswith(".csv"):
+        df = pd.read_csv(path)
+    elif path.endswith(".parquet"):
+        df = pd.read_parquet(path)
+    else:
+        raise ValueError(f"Unsupported file format: {path}")
+
+    if "link" not in df.columns:
+        raise ValueError(f"❌ File {path} thiếu cột 'link'")
+
+    return df["link"].dropna().unique().tolist()
