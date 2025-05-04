@@ -1,7 +1,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 from batdongsan_playwright import *  # Adjusted import path to relative location
-from hdfs import InsecureClient
+# from hdfs import InsecureClient
 import json
 import random
 import os
@@ -13,12 +13,12 @@ import pyarrow as pa
 import argparse
 
 # HDFS config
-HDFS_URL = "http://namenode:9870"
-HDFS_DIR = "/data/test/raw_data"
-hdfs_client = InsecureClient(HDFS_URL, user="airflow")
+# HDFS_URL = "http://namenode:9870"
+# HDFS_DIR = "/data/test/raw_data"
+# hdfs_client = InsecureClient(HDFS_URL, user="airflow")
 
-CHECKPOINT_FILE = "/tmp/checkpoint.json"
-BATCH_SIZE = 50
+CHECKPOINT_FILE = "./tmp/checkpoint.json"
+BATCH_SIZE = 10
 buffer = []
 
 user_agents = [
@@ -50,46 +50,44 @@ def load_checkpoint():
 
 # --- Logging ---
 
-def log_error_to_hdfs(message):
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    log_dir = f"/data/test/logs/{date_str}"
-    log_file = f"{log_dir}/crawler_logs_{datetime.now().strftime('%H_%M')}.log"
-    log_message = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n"
+# def log_error_to_hdfs(message):
+#     date_str = datetime.now().strftime("%Y-%m-%d")
+#     log_dir = f"/data/test/logs/{date_str}"
+#     log_file = f"{log_dir}/crawler_logs_{datetime.now().strftime('%H_%M')}.log"
+#     log_message = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n"
 
-    try:
-        # Đảm bảo thư mục tồn tại
-        if not hdfs_client.status(log_dir, strict=False):
-            hdfs_client.makedirs(log_dir)
+#     try:
+#         # Đảm bảo thư mục tồn tại
+#         if not hdfs_client.status(log_dir, strict=False):
+#             hdfs_client.makedirs(log_dir)
 
-        # Đảm bảo file tồn tại trước khi append
-        if not hdfs_client.status(log_file, strict=False):
-            with hdfs_client.write(log_file, overwrite=True, encoding="utf-8") as writer:
-                writer.write("")  # Tạo file rỗng
+#         # Đảm bảo file tồn tại trước khi append
+#         if not hdfs_client.status(log_file, strict=False):
+#             with hdfs_client.write(log_file, overwrite=True, encoding="utf-8") as writer:
+#                 writer.write("")  # Tạo file rỗng
 
-        # Ghi log
-        with hdfs_client.write(log_file, append=True, encoding="utf-8") as writer:
-            writer.write(log_message)
+#         # Ghi log
+#         with hdfs_client.write(log_file, append=True, encoding="utf-8") as writer:
+#             writer.write(log_message)
 
-        print(f"Logged error to {log_file}")
+#         print(f"Logged error to {log_file}")
 
-    except Exception as e:
-        print(f"Failed to log error to HDFS: {e}")
+#     except Exception as e:
+#         print(f"Failed to log error to HDFS: {e}")
+
+
 # --- Save to HDFS ---
 
 def write_to_parquet(houses_json):
     df = pd.DataFrame(houses_json)
-    table = pa.Table.from_pandas(df)
-    local_temp_file = f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
-    pq.write_table(table, local_temp_file)
-    batch_name = f"{HDFS_DIR}/batdongsan_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+    local_folder = "data/"
+    os.makedirs(local_folder, exist_ok=True)
+    local_file = os.path.join(local_folder, f"batdongsan_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     try:
-        hdfs_client.upload(batch_name, local_temp_file, overwrite=True)
-        print(f"✅ Uploaded to HDFS: {batch_name}")
+        df.to_csv(local_file, index=False)
+        print(f"✅ Saved to local folder: {local_file}")
     except Exception as e:
-        log_error_to_hdfs(f"Upload failed: {e}")
-        print(f"❌ Upload failed: {e}")
-    finally:
-        os.remove(local_temp_file)
+        print(f"❌ Save failed: {e}")
 
 async def crawl_page(playwright, page_number):
     retries = 3
@@ -124,7 +122,7 @@ async def crawl_page(playwright, page_number):
             await browser.close()
             return f"Page {page_number} done"
         except Exception as e:
-            log_error_to_hdfs(f"Error on page {page_number}: {e}")
+            # log_error_to_hdfs(f"Error on page {page_number}: {e}")
             print(f"Error on page {page_number}: {e}")
             retries -= 1
             await asyncio.sleep(5)
@@ -164,8 +162,8 @@ async def crawl_data(start_page, end_page, max_tasks=5, force_crawl=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start_page", type=int, default=0)
-    parser.add_argument("--end_page", type=int, default=500)
+    parser.add_argument("--start_page", type=int, default=1)
+    parser.add_argument("--end_page", type=int, default=20)
     parser.add_argument("--retry_failed", action="store_true")
     args = parser.parse_args()
 

@@ -1,3 +1,4 @@
 **/namenode/
 **/datanode*
 **/airflow/logs/
+**/tmp/
