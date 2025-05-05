@@ -7,14 +7,25 @@ import argparse
 from datetime import datetime
 
 # Thêm thư mục gốc vào sys.path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 from common.queue.kafka_client import KafkaProducer
 from common.utils.logging_utils import setup_logging
-from sources.batdongsan.playwright.list_crawler import crawl_listings as playwright_crawl
-from sources.batdongsan.selenium.list_crawler import crawl_listings as selenium_crawl
+from sources.batdongsan.playwright.list_crawler import (
+    crawl_listings as playwright_crawl,
+)
+
+# from sources.batdongsan.selenium.list_crawler import crawl_listings as selenium_crawl
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 logger = setup_logging()
+
 
 class ListCrawlerService:
     def __init__(self):
@@ -35,15 +46,29 @@ class ListCrawlerService:
         self.running = False
 
     async def crawl_and_publish(self):
-        """Crawl danh sách và publish URL vào Kafka"""
+        """Crawl danh sách và publish URL vào Kafka theo từng batch"""
         logger.info(f"Starting crawler for pages {self.start_page} to {self.end_page}")
+
+        # Định nghĩa callback để xử lý URLs realtime
+        async def kafka_publish_callback(url_batch):
+            for url in url_batch:
+                message = {
+                    "url": url,
+                    "source": self.source,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                self.producer.send("property-urls", message)
 
         # Lựa chọn crawler dựa trên cấu hình
         if self.source == "batdongsan":
             if self.crawler_type == "playwright":
-                urls = await playwright_crawl(self.start_page, self.end_page, self.max_concurrent)
-            elif self.crawler_type == "selenium":
-                urls = await selenium_crawl(self.start_page, self.end_page, self.max_concurrent)
+                # Truyền vào callback để xử lý urls realtime
+                url_count = await playwright_crawl(
+                    self.start_page,
+                    self.end_page,
+                    self.max_concurrent,
+                    kafka_callback=kafka_publish_callback,
+                )
             else:
                 logger.error(f"Unsupported crawler type: {self.crawler_type}")
                 return
@@ -51,29 +76,14 @@ class ListCrawlerService:
             logger.error(f"Unsupported source: {self.source}")
             return
 
-        # Publish URLs vào Kafka
-        logger.info(f"Crawled {len(urls)} URLs. Publishing to Kafka...")
-        published_count = 0
-
-        for url in urls:
-            # Tạo message với metadata
-            message = {
-                "url": url,
-                "source": self.source,
-                "timestamp": datetime.now().isoformat()
-            }
-
-            # Gửi đến Kafka
-            success = self.producer.send("property-urls", message)
-            if success:
-                published_count += 1
-
-        logger.info(f"Published {published_count}/{len(urls)} URLs to Kafka")
-        return published_count
+        logger.info(f"Crawled and published {url_count} URLs to Kafka")
+        return url_count
 
     def run(self, interval=3600):
         """Chạy service với chu kỳ lặp lại (mặc định là 1 giờ)"""
-        logger.info(f"List Crawler Service started with {self.crawler_type} crawler for {self.source}")
+        logger.info(
+            f"List Crawler Service started with {self.crawler_type} crawler for {self.source}"
+        )
 
         try:
             while self.running:
@@ -81,6 +91,7 @@ class ListCrawlerService:
 
                 # Crawl và publish URLs
                 import asyncio
+
                 asyncio.run(self.crawl_and_publish())
 
                 # Tính thời gian cần sleep
@@ -88,7 +99,9 @@ class ListCrawlerService:
                 sleep_time = max(0, interval - elapsed_time)
 
                 if sleep_time > 0 and self.running:
-                    logger.info(f"Sleeping for {int(sleep_time)} seconds until next crawl cycle")
+                    logger.info(
+                        f"Sleeping for {int(sleep_time)} seconds until next crawl cycle"
+                    )
                     # Sleep với kiểm tra định kỳ để có thể dừng sớm
                     for _ in range(int(sleep_time)):
                         if not self.running:
@@ -102,9 +115,12 @@ class ListCrawlerService:
         finally:
             logger.info("List Crawler Service stopped")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Run List Crawler Service")
-    parser.add_argument("--interval", type=int, default=3600, help="Crawl interval in seconds")
+    parser.add_argument(
+        "--interval", type=int, default=3600, help="Crawl interval in seconds"
+    )
     parser.add_argument("--once", action="store_true", help="Crawl once and exit")
 
     args = parser.parse_args()
@@ -114,10 +130,12 @@ def main():
     if args.once:
         # Chạy một lần và thoát
         import asyncio
+
         asyncio.run(service.crawl_and_publish())
     else:
         # Chạy liên tục với interval
         service.run(interval=args.interval)
+
 
 if __name__ == "__main__":
     main()

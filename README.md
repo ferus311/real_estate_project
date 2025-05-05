@@ -128,6 +128,33 @@ real_estate_project/
 
 ### 4.1 Data Collection Flow
 
+
+```
+┌────────────────────────┐          ┌────────────────────────┐          ┌────────────────────────┐
+│                        │          │                        │          │                        │
+│  list_crawler.py       │  URLs    │  list_crawler/main.py  │  JSONs   │  Kafka                 │
+│  (Thu thập URLs)       │───────► │  (Service)             │───────► │  (Topic: property-urls) │
+│                        │          │                        │          │                        │
+└────────────────────────┘          └────────────────────────┘          └────────────────────────┘
+                                                                                  │
+                                                                                  │
+┌────────────────────────┐          ┌────────────────────────┐                    │
+│                        │  JSONs   │                        │                    │
+│  Kafka                 │◄──────── │  detail_crawler        │◄───────────────────┘
+│  (Topic: property-data)│          │  (Thu thập chi tiết)   │
+│                        │          │                        │
+└────────────────────────┘          └────────────────────────┘
+          │
+          │
+          ▼
+┌────────────────────────┐
+│                        │
+│  storage_service       │
+│  (Lưu trữ vào HDFS)    │
+│                        │
+└────────────────────────┘
+```
+
 #### **List Crawler Service**
 
 * Thu thập URL từ nhiều trang danh sách bất động sản.

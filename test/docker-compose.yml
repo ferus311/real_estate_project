@@ -181,7 +181,7 @@ services:
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
-      - ./volumes/postgres:/var/lib/postgresql/data
+      - airflow_postgres_data:/var/lib/postgresql/data
     networks:
       - airflow_network
 
@@ -222,6 +222,8 @@ services:
       - postgres
     command: scheduler
 
+  volumes:
+      airflow_postgres_data:
   # Spark - Data Processing
   spark-master:
     image: bitnami/spark:3.4.1

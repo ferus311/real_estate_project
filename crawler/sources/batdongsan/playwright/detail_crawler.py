@@ -1,31 +1,16 @@
 import asyncio
 import random
-import pandas as pd
-import os
+from datetime import datetime
+from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
-from crawler.common.models.house_detail import HouseDetailItem
-from crawler.common.storage.local_storage import (
-    write_to_local,
-    load_latest_from_local,
-    list_all_house_list_files,
-    load_links_from_file,
-)
-from crawler.common.utils.checkpoint import (
-    load_checkpoint,
-    save_checkpoint,
-    load_file_checkpoint,
-    mark_file_done,
-    is_file_done,
-)
-from crawler.sources.batdongsan.playwright.extractors import extract_detail_info
+from common.models.house_detail import HouseDetailItem
+from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from sources.batdongsan.playwright.extractors import extract_detail_info
 
 # Cấu hình
-CHECKPOINT_FILE = "./tmp/batdongsan_detail_checkpoint.json"
-BATCH_SIZE = 1000
-MAX_RETRIES = 2
-MAX_TASKS = 5
-FLUSH_INTERVAL = 30  # giây
+CHECKPOINT_FILE = "./checkpoint/batdongsan_detail_checkpoint.json"
+MAX_RETRIES = 3
 
 user_agents = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
@@ -37,131 +22,108 @@ user_agents = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
 ]
 
+async def crawl_detail(url):
+    """
+    Crawl chi tiết một tin đăng bất động sản từ URL
 
-# ================================
-# Crawl 1 link chi tiết
-# ================================
-async def crawl_detail_link(
-    playwright, link: str, sem: asyncio.Semaphore, queue: asyncio.Queue
-):
-    async with sem:
-        retries = MAX_RETRIES
-        checkpoint = load_checkpoint(CHECKPOINT_FILE)
-        if link in checkpoint and checkpoint[link]:
-            return
+    Args:
+        url (str): URL của trang chi tiết cần crawl
 
-        while retries > 0:
-            browser = None
-            try:
+    Returns:
+        dict: Dữ liệu chi tiết tin đăng, hoặc None nếu có lỗi
+    """
+    retries = MAX_RETRIES
+    while retries > 0:
+        browser = None
+        try:
+            # Trích xuất post_id từ URL để sử dụng cho checkpoint
+            path = urlparse(url).path
+            post_id = path.split('-')[-1].split('pr')[1] if 'pr' in path else None
+
+            if post_id:
+                # Kiểm tra xem đã crawl chưa
+                checkpoint = load_checkpoint(CHECKPOINT_FILE)
+                if post_id in checkpoint and checkpoint[post_id]:
+                    print(f"[Detail Crawler] Post {post_id} already crawled")
+                    return None
+
+            # Khởi tạo browser và context
+            async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(headless=True)
                 context = await browser.new_context(
-                    user_agent=random.choice(user_agents)
+                    user_agent=random.choice(user_agents),
+                    viewport={"width": 1280, "height": 720},
                 )
+
+                # Chặn tải ảnh, CSS, font để tăng tốc
+                await context.route('**/*', lambda route:
+                    route.abort() if route.request.resource_type in ['image', 'stylesheet', 'font']
+                    else route.continue_()
+                )
+
+                # Truy cập trang chi tiết
                 page = await context.new_page()
-                print(f"🔎 Crawling: {link}")
-                await page.goto(link, timeout=60000)
+                print(f"[Detail Crawler] Crawling {url}")
+                await page.goto(url, timeout=60000)
+                await page.wait_for_load_state("networkidle")
+
+                # Lấy HTML và trích xuất thông tin
                 html = await page.content()
-                detail = extract_detail_info(html)
+                detail_info = extract_detail_info(html)
 
-                await page.close()
-                await context.close()
+                if not detail_info:
+                    print(f"[Detail Crawler] No data extracted from {url}")
+                    retries -= 1
+                    await asyncio.sleep(2)
+                    continue
+
+                # Lưu checkpoint nếu có post_id
+                if post_id:
+                    save_checkpoint(CHECKPOINT_FILE, post_id, success=True)
+
+                # Chuyển đối tượng thành dictionary
+                detail_dict = detail_info.__dict__ if hasattr(detail_info, '__dict__') else detail_info
+
+                # Thêm metadata
+                detail_dict.update({
+                    "crawl_timestamp": datetime.now().isoformat(),
+                    "source": "batdongsan",
+                    "url": url
+                })
+
                 await browser.close()
+                return detail_dict
 
-                if detail:
-                    await queue.put(detail.__dict__)
-                    save_checkpoint(CHECKPOINT_FILE, link, success=True)
-                else:
-                    save_checkpoint(CHECKPOINT_FILE, link, success=False)
-                return
-            except Exception as e:
-                print(f"❌ Error on link {link}: {e}")
-                retries -= 1
-                await asyncio.sleep(2)
-            finally:
+        except Exception as e:
+            print(f"[Detail Crawler] Error crawling {url}: {e}")
+            retries -= 1
+            await asyncio.sleep(random.uniform(2, 5))  # Random backoff
+        finally:
+            if browser:
                 try:
-                    if browser:
-                        await browser.close()
+                    await browser.close()
                 except:
                     pass
 
-        save_checkpoint(CHECKPOINT_FILE, link, success=False)
+    # Lưu checkpoint thất bại nếu có post_id
+    if 'post_id' in locals() and post_id:
+        save_checkpoint(CHECKPOINT_FILE, post_id, success=False)
+
+    return None
 
 
-# ================================
-# Ghi dữ liệu nền
-# ================================
-async def writer_worker(queue: asyncio.Queue, stop_event: asyncio.Event):
-    buffer = []
-    while not stop_event.is_set() or not queue.empty():
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=FLUSH_INTERVAL)
-            buffer.append(item)
-        except asyncio.TimeoutError:
-            pass  # không có dữ liệu mới, vẫn ghi buffer nếu có
-
-        if len(buffer) >= BATCH_SIZE or (stop_event.is_set() and buffer):
-            print(f"💾 Flushing {len(buffer)} records to CSV...")
-            write_to_local(buffer, prefix="house_detail_test", file_format="csv")
-            buffer.clear()
-
-
-# ================================
-# Crawl nhiều link chi tiết
-# ================================
-async def crawl_detail_links(links, max_tasks=MAX_TASKS):
-    checkpoint = load_checkpoint(CHECKPOINT_FILE)
-    links = [link for link in links if link not in checkpoint or not checkpoint[link]]
-    print(f"🔗 Total uncrawled links: {len(links)}")
-
-    queue = asyncio.Queue()
-    stop_event = asyncio.Event()
-
-    async with async_playwright() as playwright:
-        sem = asyncio.Semaphore(max_tasks)
-
-        # Launch writer task
-        writer_task = asyncio.create_task(writer_worker(queue, stop_event))
-
-        # Launch crawl tasks
-        tasks = [
-            asyncio.create_task(crawl_detail_link(playwright, link, sem, queue))
-            for link in links
-        ]
-        await asyncio.gather(*tasks)
-
-        # Signal writer to flush and exit
-        stop_event.set()
-        await writer_task
-
-
-# ==========================
-# Main logic
-# ==========================
-async def process_file(path, checkpoint):
-    filename = os.path.basename(path)
-    if is_file_done(filename, checkpoint):
-        print(f"✅ Skipping {filename} (already processed)")
-        return
-
-    print(f"\n🚀 Crawling from file: {filename}")
-    links = load_links_from_file(path)
-    await crawl_detail_links(links)
-    mark_file_done(filename, CHECKPOINT_FILE)
-
-
-async def crawl_all_detail_from_all_files():
-    files = list_all_house_list_files(prefix="house_list", file_format="csv")
-    if not files:
-        print("❌ No files found to process.")
-        return
-    checkpoint = load_file_checkpoint(CHECKPOINT_FILE)
-
-    for file_path in files:
-        await process_file(file_path, checkpoint)
-
-
-# ================================
-# CLI entry
-# ================================
+# CLI để test
 if __name__ == "__main__":
-    asyncio.run(crawl_all_detail_from_all_files())
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description='Crawl chi tiết từ URL')
+    parser.add_argument('--url', type=str, required=True, help='URL to crawl')
+
+    args = parser.parse_args()
+
+    result = asyncio.run(crawl_detail(args.url))
+    if result:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print("Failed to crawl detail")

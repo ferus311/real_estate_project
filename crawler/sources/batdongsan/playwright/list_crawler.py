@@ -1,12 +1,12 @@
 import asyncio
 import random
 from playwright.async_api import async_playwright
-from crawler.common.utils.checkpoint import load_checkpoint, save_checkpoint
-from crawler.common.storage.local_storage import write_to_local
-from crawler.sources.batdongsan.playwright.extractors import extract_list_items
+from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from common.storage.local_storage import write_to_local
+from sources.batdongsan.playwright.extractors import extract_list_items
 
 # Cấu hình
-CHECKPOINT_FILE = "./tmp/batdongsan_list_checkpoint.json"
+CHECKPOINT_FILE = "./checkpoint/batdongsan_list_checkpoint.json"
 BATCH_SIZE = 1000
 MAX_RETRIES = 3
 FLUSH_INTERVAL = 30  # giây
@@ -20,27 +20,14 @@ user_agents = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
 ]
-# ================================
-# Ghi dữ liệu nền từ queue
-# ================================
-async def writer_worker(queue: asyncio.Queue, stop_event: asyncio.Event):
-    buffer = []
-    while not stop_event.is_set() or not queue.empty():
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=FLUSH_INTERVAL)
-            buffer.append(item)
-        except asyncio.TimeoutError:
-            pass  # timeout ghi dù buffer chưa đủ
 
-        if len(buffer) >= BATCH_SIZE or (stop_event.is_set() and buffer):
-            print(f"💾 [Writer] Flushing {len(buffer)} records...")
-            write_to_local(buffer, prefix="house_list", file_format="csv")
-            buffer.clear()
 
 # ================================
 # Crawl 1 trang
 # ================================
-async def crawl_list_page(playwright, page_number: int, queue: asyncio.Queue):
+
+
+async def crawl_list_page(playwright, page_number: int):
     retries = MAX_RETRIES
     while retries > 0:
         browser = None
@@ -61,15 +48,15 @@ async def crawl_list_page(playwright, page_number: int, queue: asyncio.Queue):
             if not listings:
                 print(f"[List Crawler] Page {page_number} - No data found")
                 save_checkpoint(CHECKPOINT_FILE, page_number, success=False)
-                return
-
-            for item in listings:
-                await queue.put(item.__dict__)
+                return []
 
             print(f"[List Crawler] Page {page_number} - {len(listings)} listings")
             save_checkpoint(CHECKPOINT_FILE, page_number, success=True)
+
             await browser.close()
-            return
+            # Trả về danh sách các đối tượng đã chuyển thành dict
+            return [item.__dict__ for item in listings] if listings else []
+
         except Exception as e:
             print(f"❌ Error on page {page_number}: {e}")
             retries -= 1
@@ -82,38 +69,71 @@ async def crawl_list_page(playwright, page_number: int, queue: asyncio.Queue):
                 pass
 
     save_checkpoint(CHECKPOINT_FILE, page_number, success=False)
+    return []
+
 
 # ================================
 # Crawl nhiều trang
 # ================================
-async def crawl_list_pages(start_page=1, end_page=100, max_tasks=5, force=False):
+async def crawl_listings(start_page=1, end_page=100, max_concurrent=5, force=False, kafka_callback=None):
+    """
+    Crawl nhiều trang và xử lý URLs theo callback
+
+    Args:
+        start_page: Trang bắt đầu
+        end_page: Trang kết thúc
+        max_concurrent: Số lượng tác vụ đồng thời
+        force: Bỏ qua checkpoint
+        kafka_callback: Hàm callback để xử lý URLs khi thu thập (để push lên Kafka)
+
+    Returns:
+        int: Số lượng URLs đã xử lý
+    """
     checkpoint = load_checkpoint(CHECKPOINT_FILE)
     pages = (
         range(start_page, end_page + 1)
         if force
-        else [p for p in range(start_page, end_page + 1) if str(p) not in checkpoint or not checkpoint[str(p)]]
+        else [
+            p
+            for p in range(start_page, end_page + 1)
+            if str(p) not in checkpoint or not checkpoint[str(p)]
+        ]
     )
 
-    queue = asyncio.Queue()
-    stop_event = asyncio.Event()
+    url_count = 0
 
     async with async_playwright() as playwright:
-        sem = asyncio.Semaphore(max_tasks)
+        sem = asyncio.Semaphore(max_concurrent)
 
         async def sem_task(pn):
+            nonlocal url_count
+
             async with sem:
-                await crawl_list_page(playwright, pn, queue)
+                listings = await crawl_list_page(playwright, pn, None)
 
-        # Start writer
-        writer_task = asyncio.create_task(writer_worker(queue, stop_event))
+                if listings:
+                    # Thu thập URLs và xử lý ngay lập tức từng batch nhỏ
+                    urls_batch = []
+                    batch_size = 50  # Một batch nhỏ để xử lý
 
-        # Start crawl tasks
-        crawl_tasks = [asyncio.create_task(sem_task(page_number)) for page_number in pages]
-        await asyncio.gather(*crawl_tasks)
+                    for item in listings:
+                        if "link" in item and item["link"]:
+                            urls_batch.append(item["link"])
+                            url_count += 1
 
-        # Signal writer to flush remaining data
-        stop_event.set()
-        await writer_task
+                            # Khi đủ batch size, gửi lên Kafka và xóa batch
+                            if len(urls_batch) >= batch_size and kafka_callback:
+                                await kafka_callback(urls_batch)
+                                urls_batch = []
+
+                    # Gửi batch cuối cùng nếu còn
+                    if urls_batch and kafka_callback:
+                        await kafka_callback(urls_batch)
+
+        tasks = [asyncio.create_task(sem_task(page_number)) for page_number in pages]
+        await asyncio.gather(*tasks)
+
+    return url_count
 
 # ================================
 # CLI entry
@@ -127,4 +147,4 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    asyncio.run(crawl_list_pages(args.start, args.end, force=args.force))
+    # asyncio.run(crawl_list_pages(args.start, args.end, force=args.force))

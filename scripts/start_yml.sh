@@ -13,7 +13,7 @@ mkdir -p docker/volumes/hdfs/namenode
 mkdir -p docker/volumes/hdfs/datanode1
 mkdir -p docker/volumes/hdfs/datanode2
 mkdir -p docker/volumes/hdfs/datanode3
-mkdir -p docker/volumes/kafka
+# mkdir -p docker/volumes/kafka
 mkdir -p data_processing/airflow/dags
 mkdir -p data_processing/airflow/logs
 mkdir -p data_processing/airflow/plugins
@@ -81,7 +81,7 @@ fi
 
 # 4. Khởi động Spark
 echo "===== KHỞI ĐỘNG SPARK ====="
-docker compose -f yml/spark.yml up
+docker compose -f yml/spark.yml up -d
 echo "Đợi Spark khởi động hoàn tất..."
 sleep 5
 

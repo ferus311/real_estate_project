@@ -70,19 +70,27 @@ RUN pip install --no-cache-dir \
     requests \
     beautifulsoup4 \
     lxml \
+    pyhdfs \
     scrapy
 
 # Install Playwright browsers
 RUN pip install playwright && python -m playwright install chromium
 
+RUN apt-get update && apt-get install -y \
+    librdkafka-dev \
+    build-essential \
+    python3-dev
+
+RUN pip install confluent-kafka
+
 # Copy the crawler code
 COPY . .
 
 # Make the entrypoint script executable
-RUN chmod +x /app/entrypoint.sh
+# RUN chmod +x /app/entrypoint.sh
 
 # Set the entrypoint
-ENTRYPOINT ["/app/entrypoint.sh"]
+# ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Default command (can be overridden from docker-compose)
-CMD ["python", "-m", "services.list_crawler.main"]
+# CMD ["python", "-m", "services.list_crawler.main"]

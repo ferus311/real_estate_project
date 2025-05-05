@@ -1,7 +1,7 @@
 import re
 from bs4 import BeautifulSoup
-from crawler.common.models.house_list import HouseListItem
-from crawler.common.models.house_detail import HouseDetailItem
+from common.models.house_list import HouseListItem
+from common.models.house_detail import HouseDetailItem
 
 
 # ===============================
