@@ -3,3 +3,5 @@
 **/airflow/logs/
 **/tmp/
 **/volumes/postgres/
+**/volumes/kafka/
+**/volumes/zookeeper/

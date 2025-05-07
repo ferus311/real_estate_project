@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     git \
+    nano \
     && rm -rf /var/lib/apt/lists/*
 
 # Install browser dependencies for Playwright

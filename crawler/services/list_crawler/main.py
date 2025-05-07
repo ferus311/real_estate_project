@@ -34,7 +34,7 @@ class ListCrawlerService:
         self.crawler_type = os.environ.get("CRAWLER_TYPE", "playwright")
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT", "5"))
         self.start_page = int(os.environ.get("START_PAGE", "1"))
-        self.end_page = int(os.environ.get("END_PAGE", "10"))
+        self.end_page = int(os.environ.get("END_PAGE", "500"))
         self.producer = KafkaProducer()
 
         # Xử lý tín hiệu để dừng service an toàn

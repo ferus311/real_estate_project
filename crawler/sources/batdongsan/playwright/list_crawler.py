@@ -2,7 +2,6 @@ import asyncio
 import random
 from playwright.async_api import async_playwright
 from common.utils.checkpoint import load_checkpoint, save_checkpoint
-from common.storage.local_storage import write_to_local
 from sources.batdongsan.playwright.extractors import extract_list_items
 
 # Cấu hình
@@ -75,7 +74,9 @@ async def crawl_list_page(playwright, page_number: int):
 # ================================
 # Crawl nhiều trang
 # ================================
-async def crawl_listings(start_page=1, end_page=100, max_concurrent=5, force=False, kafka_callback=None):
+async def crawl_listings(
+    start_page=1, end_page=100, max_concurrent=5, force=False, kafka_callback=None
+):
     """
     Crawl nhiều trang và xử lý URLs theo callback
 
@@ -109,7 +110,7 @@ async def crawl_listings(start_page=1, end_page=100, max_concurrent=5, force=Fal
             nonlocal url_count
 
             async with sem:
-                listings = await crawl_list_page(playwright, pn, None)
+                listings = await crawl_list_page(playwright, pn)
 
                 if listings:
                     # Thu thập URLs và xử lý ngay lập tức từng batch nhỏ
@@ -135,9 +136,20 @@ async def crawl_listings(start_page=1, end_page=100, max_concurrent=5, force=Fal
 
     return url_count
 
-# ================================
-# CLI entry
-# ================================
+    # ================================
+    # CLI entry
+    # ================================
+
+
+async def main():
+    url_count = await crawl_listings(
+        start_page=args.start, end_page=args.end, force=args.force
+    )
+    print(f"✅ Total URLs processed: {url_count}")
+
+
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -146,5 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--end", type=int, default=200)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+
+    asyncio.run(main())
 
     # asyncio.run(crawl_list_pages(args.start, args.end, force=args.force))

@@ -61,12 +61,7 @@ services:
         container_name: crawler-shell
         entrypoint: ['/bin/bash']
         tty: true
-        environment:
-            - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-            - HDFS_NAMENODE=namenode:9000
-            - SOURCE=batdongsan
-            - CRAWLER_TYPE=playwright
-            - MAX_CONCURRENT=5
+
 
 networks:
     kafka_network:

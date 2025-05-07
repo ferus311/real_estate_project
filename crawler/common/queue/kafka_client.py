@@ -3,19 +3,24 @@ import json
 import socket
 import logging
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+
 
 class KafkaProducer:
     def __init__(self, bootstrap_servers=None):
         if bootstrap_servers is None:
             # Lấy từ biến môi trường hoặc mặc định
-            bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+            bootstrap_servers = os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS", "kafka1:19092"
+            )
 
-        self.producer = Producer({
-            'bootstrap.servers': bootstrap_servers,
-            'client.id': socket.gethostname()
-        })
+        self.producer = Producer(
+            {"bootstrap.servers": bootstrap_servers, "client.id": socket.gethostname()}
+        )
 
     def send(self, topic, value, key=None):
         """Gửi message tới Kafka topic"""
@@ -28,7 +33,7 @@ class KafkaProducer:
             self.producer.produce(
                 topic=topic,
                 key=key,
-                value=value.encode('utf-8') if isinstance(value, str) else value
+                value=value.encode("utf-8") if isinstance(value, str) else value,
             )
             self.producer.flush()
             logger.debug(f"Sent message to topic {topic}")
@@ -37,10 +42,11 @@ class KafkaProducer:
             logger.error(f"Error sending message to Kafka: {e}")
             return False
 
+
 class KafkaConsumer:
     def __init__(self, topics, group_id, bootstrap_servers=None):
         if bootstrap_servers is None:
-            bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+            bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka1:19092")
 
         self.consumer = Consumer({
             'bootstrap.servers': bootstrap_servers,
