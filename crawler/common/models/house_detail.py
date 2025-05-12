@@ -1,21 +1,31 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
 class HouseDetailItem:
-    short_description: str = None
-    price: str = None
-    area: str = None
-    price_per_m2: str = None
-    coordinates: str = None
-    bedroom: str = None
-    bathroom: str = None
-    house_direction: str = None
-    balcony_direction: str = None
-    legal_status: str = None
-    interior: str = None
-    facade_width: str = None
-    road_width: str = None
-    floor_count: str = None
-    title: str = None
-    description: str = None
+    # Trường bắt buộc (cốt lõi, có ở cả hai trang)
+    title: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[str] = None
+    area: Optional[str] = None
+    price_per_m2: Optional[str] = None
+    bedroom: Optional[str] = None
+    bathroom: Optional[str] = None
+    legal_status: Optional[str] = None
+    latitude: Optional[str] = None
+    longitude: Optional[str] = None
+
+    # Trường tùy chọn (đặc thù của từng trang)
+    house_direction: Optional[str] = None  # Chỉ có ở batdongsan
+    balcony_direction: Optional[str] = None
+    facade_width: Optional[str] = None
+    road_width: Optional[str] = None
+    floor_count: Optional[str] = None
+    interior: Optional[str] = None
+    furnishing_sell: Optional[str] = None  # Chỉ có ở chotot
+    deposit: Optional[str] = None
+    seller_info: Optional[dict] = None  # Lưu thông tin người bán của chotot
+
+    # Các trường khác nếu cần
+    source: Optional[str] = None  # Để biết dữ liệu từ batdongsan hay chotot

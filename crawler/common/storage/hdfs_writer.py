@@ -8,281 +8,244 @@ from datetime import datetime
 from pyhdfs import HdfsClient
 import socket
 import time
+import pyarrow as pa
+import pyarrow.parquet as pq
+from hdfs import InsecureClient
+from typing import Dict, List, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
 class HDFSWriter:
-    def __init__(self):
-        # WebHDFS thường chạy trên cổng 50070 (Hadoop 2.x) hoặc 9870 (Hadoop 3.x)
-        # Không sử dụng cổng 9000 vì đó là cổng IPC của Hadoop, không phải WebHDFS
-        self.hdfs_hosts = os.environ.get("HDFS_HOSTS", "namenode:9870").split(",")
-        self.hdfs_user = os.environ.get("HDFS_USER", "hadoop")
-        self.base_path = os.environ.get("HDFS_BASE_PATH", "/real_estate_data")
+    """
+    Lớp xử lý việc ghi dữ liệu vào HDFS
+    """
 
-        # Số lần thử kết nối lại
-        self.max_retries = int(os.environ.get("HDFS_MAX_RETRIES", "3"))
-        # Thời gian chờ giữa các lần thử kết nối (giây)
-        self.retry_interval = int(os.environ.get("HDFS_RETRY_INTERVAL", "5"))
+    def __init__(self, namenode: str = None, user: str = None, base_path: str = None):
+        """
+        Khởi tạo kết nối đến HDFS
 
-        # Cấu hình kích thước file tối ưu (byte) - mặc định 128MB
-        self.target_file_size = int(
-            os.environ.get("HDFS_TARGET_FILE_SIZE", 128 * 1024 * 1024)
+        Args:
+            namenode: Địa chỉ namenode (host:port)
+            user: Tên user HDFS
+            base_path: Đường dẫn thư mục cơ sở trên HDFS
+        """
+        # Lấy thông tin từ biến môi trường nếu không được cung cấp
+        self.namenode = namenode or os.environ.get("HDFS_NAMENODE", "namenode:9870")
+        self.user = user or os.environ.get("HDFS_USER", "airflow")
+        self.base_path = base_path or os.environ.get(
+            "HDFS_BASE_PATH", "/data/realestate"
         )
 
-        # Định dạng file mặc định (parquet hoặc csv)
-        self.default_format = os.environ.get("HDFS_DEFAULT_FORMAT", "parquet")
+        # Khởi tạo kết nối HDFS
+        self.client = InsecureClient(f"http://{self.namenode}", user=self.user)
+        logger.info(f"Initialized HDFS connection to {self.namenode}")
 
-        # Cờ để kiểm tra nếu WebHDFS hoạt động (tránh lặp lại thông báo lỗi)
-        self.webhdfs_working = False
+    def ensure_directory_exists(self, path: str) -> bool:
+        """
+        Đảm bảo thư mục tồn tại trên HDFS
 
-        # Kết nối tới HDFS
-        self._connect_to_hdfs()
+        Args:
+            path: Đường dẫn thư mục cần kiểm tra/tạo
 
-    def _connect_to_hdfs(self):
-        """Thiết lập kết nối đến HDFS với cơ chế retry và phục hồi lỗi"""
-        retry_count = 0
-        connected = False
-
-        while retry_count < self.max_retries and not connected:
-            try:
-                logger.info(
-                    f"Connecting to HDFS at {self.hdfs_hosts} (Attempt {retry_count + 1}/{self.max_retries})"
-                )
-
-                # Thử tạo client mới
-                self.client = HdfsClient(
-                    hosts=self.hdfs_hosts, user_name=self.hdfs_user
-                )
-
-                # Kiểm tra kết nối bằng cách thực hiện một thao tác đơn giản
-                self.client.get_file_status("/")
-
-                # Nếu đến được đây, kết nối thành công
-                logger.info(f"Successfully connected to HDFS at {self.hdfs_hosts}")
-
-                # Tạo thư mục cơ sở nếu chưa tồn tại
-                if not self.client.exists(self.base_path):
-                    self.client.mkdirs(self.base_path)
-
-                # Đánh dấu WebHDFS đang hoạt động
-                self.webhdfs_working = True
-                connected = True
-
-            except Exception as e:
-                retry_count += 1
-                error_msg = str(e)
-
-                # Kiểm tra lỗi cụ thể để đưa ra thông báo hữu ích
-                if (
-                    "Expected JSON" in error_msg
-                    and "It looks like you are making an HTTP request to a Hadoop IPC port"
-                    in error_msg
-                ):
-                    logger.error(
-                        f"WebHDFS connection error: You're using an IPC port instead of WebHDFS port. "
-                        f"WebHDFS typically runs on port 50070 (Hadoop 2.x) or 9870 (Hadoop 3.x), not 9000."
-                    )
-                elif "Connection refused" in error_msg:
-                    logger.error(
-                        f"HDFS connection refused. The HDFS service might be down or the port is incorrect."
-                    )
-                elif "timed out" in error_msg:
-                    logger.error(
-                        f"HDFS connection timed out. Check if the HDFS service is running or network connectivity."
-                    )
-                else:
-                    logger.error(f"Error connecting to HDFS: {e}")
-
-                self.client = None
-
-                if retry_count < self.max_retries:
-                    logger.info(f"Retrying in {self.retry_interval} seconds...")
-                    time.sleep(self.retry_interval)
-                else:
-                    logger.error(
-                        f"Failed to connect to HDFS after {self.max_retries} attempts. "
-                        f"Writing to HDFS will be disabled."
-                    )
-
-    def _ensure_hdfs_connection(self):
-        """Kiểm tra và thử kết nối lại HDFS nếu cần"""
-        if self.client is None and not self.webhdfs_working:
-            self._connect_to_hdfs()
-        return self.client is not None
-
-    def _get_path_for_date(self):
-        """Tạo đường dẫn trên HDFS theo cấu trúc phân cấp theo ngày"""
-        today = datetime.now().strftime("%Y/%m/%d")
-        path = f"{self.base_path}/{today}"
-
-        # Tạo thư mục nếu chưa tồn tại
-        if not self.client.exists(path):
-            self.client.mkdirs(path)
-
-        return path
-
-    def _estimate_file_size(self, df):
-        """Ước tính kích thước DataFrame để quyết định có nên chia file hay không"""
-        # Phương pháp ước lượng đơn giản dựa trên memory usage
-        memory_usage = df.memory_usage(deep=True).sum()
-        logger.info(f"Estimated DataFrame size: {memory_usage} bytes")
-        return memory_usage
-
-    def _split_dataframe(self, df, max_size):
-        """Chia DataFrame thành các phần nhỏ hơn dựa trên kích thước ước tính"""
-        estimated_size = self._estimate_file_size(df)
-        if estimated_size <= max_size:
-            return [df]
-
-        # Ước tính số file cần chia
-        num_chunks = max(2, int(estimated_size / max_size) + 1)
-        logger.info(f"Splitting DataFrame into {num_chunks} chunks")
-
-        # Chia DataFrame thành các phần bằng nhau
-        return [chunk for chunk in np.array_split(df, num_chunks)]
-
-    def write_json(self, data, filename):
-        """Ghi dữ liệu JSON vào HDFS"""
-        if not self._ensure_hdfs_connection():
-            logger.error("HDFS client not initialized or WebHDFS not available")
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            self.client.makedirs(path)
+            return True
+        except Exception as e:
+            logger.error(f"Error creating directory {path}: {e}")
             return False
 
+    def write_dataframe_to_parquet(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Ghi DataFrame vào file Parquet trên HDFS
+
+        Args:
+            df: DataFrame cần lưu
+            hdfs_path: Đường dẫn đích trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        # Đảm bảo thư mục cha tồn tại
+        parent_dir = os.path.dirname(hdfs_path)
+        self.ensure_directory_exists(parent_dir)
+
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as temp_file:
+            temp_path = temp_file.name
+
         try:
-            # Tạo tệp tin tạm thời cục bộ
-            with tempfile.NamedTemporaryFile(mode="w", delete=False) as temp_file:
-                json.dump(data, temp_file, ensure_ascii=False, indent=2)
-                temp_file_path = temp_file.name
+            # Lưu DataFrame vào file tạm
+            table = pa.Table.from_pandas(df)
+            pq.write_table(table, temp_path)
 
-            # Đường dẫn đích trên HDFS
-            hdfs_path = f"{self._get_path_for_date()}/{filename}"
-
-            # Tải tệp tin lên HDFS
-            self.client.copy_from_local(temp_file_path, hdfs_path)
-
-            # Xóa tệp tin tạm thời
-            os.unlink(temp_file_path)
-
-            logger.info(f"Successfully wrote data to HDFS at {hdfs_path}")
+            # Upload lên HDFS
+            self.client.upload(hdfs_path, temp_path, overwrite=True)
+            logger.info(f"Saved DataFrame with {len(df)} rows to HDFS: {hdfs_path}")
             return True
 
         except Exception as e:
-            logger.error(f"Error writing to HDFS: {e}")
+            logger.error(f"Error writing DataFrame to HDFS: {e}")
             return False
 
-    def write_csv(self, df, filename):
-        """Ghi DataFrame vào HDFS dưới dạng CSV"""
-        if not self._ensure_hdfs_connection():
-            logger.error("HDFS client not initialized or WebHDFS not available")
-            return False
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def write_json_to_hdfs(self, data: Union[Dict, List], hdfs_path: str) -> bool:
+        """
+        Ghi dữ liệu JSON vào HDFS
+
+        Args:
+            data: Dữ liệu JSON cần lưu
+            hdfs_path: Đường dẫn đích trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        import json
+
+        # Đảm bảo thư mục cha tồn tại
+        parent_dir = os.path.dirname(hdfs_path)
+        self.ensure_directory_exists(parent_dir)
 
         try:
-            # Kiểm tra kích thước và chia DataFrame nếu cần
-            chunks = self._split_dataframe(df, self.target_file_size)
+            # Chuyển đổi dữ liệu thành chuỗi JSON
+            json_str = json.dumps(data, ensure_ascii=False)
 
-            successful_writes = 0
+            # Ghi vào HDFS
+            with self.client.write(hdfs_path, overwrite=True) as writer:
+                writer.write(json_str.encode("utf-8"))
 
-            for i, chunk in enumerate(chunks):
-                # Tạo tên file phù hợp nếu có nhiều phần
-                chunk_filename = (
-                    filename
-                    if len(chunks) == 1
-                    else f"{os.path.splitext(filename)[0]}_part{i}{os.path.splitext(filename)[1]}"
-                )
-
-                # Tạo tệp tin tạm thời cục bộ
-                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                    chunk.to_csv(temp_file.name, index=False)
-                    temp_file_path = temp_file.name
-
-                # Đường dẫn đích trên HDFS
-                hdfs_path = f"{self._get_path_for_date()}/{chunk_filename}"
-
-                # Tải tệp tin lên HDFS
-                self.client.copy_from_local(temp_file_path, hdfs_path)
-
-                # Xóa tệp tin tạm thời
-                os.unlink(temp_file_path)
-
-                successful_writes += 1
-                logger.info(
-                    f"Successfully wrote CSV chunk {i+1}/{len(chunks)} to HDFS at {hdfs_path}"
-                )
-
-            return successful_writes == len(chunks)
+            logger.info(f"Wrote JSON data to HDFS: {hdfs_path}")
+            return True
 
         except Exception as e:
-            logger.error(f"Error writing CSV to HDFS: {e}")
+            logger.error(f"Error writing JSON to HDFS: {e}")
             return False
 
-    def write_parquet(self, df, filename):
-        """Ghi DataFrame vào HDFS dưới dạng Parquet (hiệu quả hơn cho Big Data)"""
-        if not self._ensure_hdfs_connection():
-            logger.error("HDFS client not initialized or WebHDFS not available")
-            return False
+    def read_parquet_from_hdfs(self, hdfs_path: str) -> Optional[pd.DataFrame]:
+        """
+        Đọc file Parquet từ HDFS
+
+        Args:
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            Optional[pd.DataFrame]: DataFrame đã đọc hoặc None nếu thất bại
+        """
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as temp_file:
+            temp_path = temp_file.name
 
         try:
-            # Đảm bảo filename có đuôi .parquet
-            if not filename.endswith(".parquet"):
-                filename = f"{os.path.splitext(filename)[0]}.parquet"
+            # Kiểm tra file tồn tại
+            if not self.client.status(hdfs_path, strict=False):
+                logger.error(f"File not found on HDFS: {hdfs_path}")
+                return None
 
-            # Kiểm tra kích thước và chia DataFrame nếu cần
-            chunks = self._split_dataframe(df, self.target_file_size)
+            # Download từ HDFS về local
+            self.client.download(hdfs_path, temp_path, overwrite=True)
 
-            successful_writes = 0
+            # Đọc DataFrame
+            df = pd.read_parquet(temp_path)
+            logger.info(f"Read DataFrame with {len(df)} rows from HDFS: {hdfs_path}")
+            return df
 
-            for i, chunk in enumerate(chunks):
-                # Tạo tên file phù hợp nếu có nhiều phần
-                chunk_filename = (
-                    filename
-                    if len(chunks) == 1
-                    else f"{os.path.splitext(filename)[0]}_part{i}.parquet"
-                )
+        except Exception as e:
+            logger.error(f"Error reading Parquet from HDFS: {e}")
+            return None
 
-                # Tạo tệp tin tạm thời cục bộ
-                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                    # Ghi DataFrame ra file Parquet với nén snappy (tối ưu tốc độ và kích thước)
-                    chunk.to_parquet(
-                        temp_file.name,
-                        engine="pyarrow",
-                        compression="snappy",
-                        index=False,
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def append_dataframe_to_parquet(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Thêm DataFrame vào file Parquet hiện có
+
+        Args:
+            df: DataFrame cần thêm
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            # Kiểm tra file tồn tại
+            file_exists = self.client.status(hdfs_path, strict=False) is not None
+
+            if file_exists:
+                # Đọc DataFrame hiện có
+                existing_df = self.read_parquet_from_hdfs(hdfs_path)
+                if existing_df is None:
+                    logger.warning(
+                        f"Could not read existing file, creating new one: {hdfs_path}"
                     )
-                    temp_file_path = temp_file.name
+                    return self.write_dataframe_to_parquet(df, hdfs_path)
 
-                # Đường dẫn đích trên HDFS
-                hdfs_path = f"{self._get_path_for_date()}/{chunk_filename}"
+                # Gộp DataFrame
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
 
-                # Tải tệp tin lên HDFS
-                self.client.copy_from_local(temp_file_path, hdfs_path)
-
-                # Xóa tệp tin tạm thời
-                os.unlink(temp_file_path)
-
-                successful_writes += 1
-                logger.info(
-                    f"Successfully wrote Parquet chunk {i+1}/{len(chunks)} to HDFS at {hdfs_path}"
-                )
-
-            return successful_writes == len(chunks)
+                # Ghi lại file
+                return self.write_dataframe_to_parquet(combined_df, hdfs_path)
+            else:
+                # File không tồn tại, tạo mới
+                return self.write_dataframe_to_parquet(df, hdfs_path)
 
         except Exception as e:
-            logger.error(f"Error writing Parquet to HDFS: {e}")
+            logger.error(f"Error appending DataFrame to HDFS file: {e}")
             return False
 
-    def write(self, df, filename, format=None):
+    def list_files(self, hdfs_dir: str, pattern: str = None) -> List[str]:
         """
-        Phương thức tiện ích để ghi dữ liệu theo định dạng mặc định hoặc được chỉ định
-        """
-        if format is None:
-            format = self.default_format
+        Liệt kê các file trong thư mục HDFS
 
-        if format.lower() == "parquet":
-            return self.write_parquet(df, filename)
-        elif format.lower() == "csv":
-            return self.write_csv(df, filename)
-        else:
-            logger.error(
-                f"Unsupported file format: {format}. Using default format {self.default_format}"
-            )
-            return self.write(df, filename, self.default_format)
+        Args:
+            hdfs_dir: Thư mục HDFS cần liệt kê
+            pattern: Mẫu để lọc tên file (ví dụ: *.parquet)
+
+        Returns:
+            List[str]: Danh sách đường dẫn file
+        """
+        try:
+            # Đảm bảo thư mục tồn tại
+            if not self.client.status(hdfs_dir, strict=False):
+                logger.warning(f"Directory not found on HDFS: {hdfs_dir}")
+                return []
+
+            # Liệt kê các file
+            files = self.client.list(hdfs_dir, status=False)
+
+            # Lọc theo pattern nếu có
+            if pattern:
+                import fnmatch
+
+                files = [f for f in files if fnmatch.fnmatch(f, pattern)]
+
+            # Trả về đường dẫn đầy đủ
+            return [os.path.join(hdfs_dir, f) for f in files]
+
+        except Exception as e:
+            logger.error(f"Error listing files in HDFS directory {hdfs_dir}: {e}")
+            return []
+
+    def generate_file_path(self, prefix: str = "data", format: str = "parquet") -> str:
+        """
+        Tạo đường dẫn file với timestamp
+
+        Args:
+            prefix: Tiền tố cho tên file
+            format: Định dạng file
+
+        Returns:
+            str: Đường dẫn file đã tạo
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{prefix}_{timestamp}.{format}"
+        return os.path.join(self.base_path, filename)

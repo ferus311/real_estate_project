@@ -4,8 +4,9 @@ import time
 import signal
 import asyncio
 import logging
+import json
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Type
 from collections import defaultdict
 
 # Thêm thư mục gốc vào sys.path
@@ -15,22 +16,26 @@ sys.path.append(
 
 from common.queue.kafka_client import KafkaConsumer, KafkaProducer
 from common.utils.logging_utils import setup_logging
-from sources.batdongsan.playwright.detail_crawler import crawl_detail
-from playwright.async_api import async_playwright
+from common.base.base_service import BaseService
+from common.base.base_detail_crawler import BaseDetailCrawler
+from common.factory.crawler_factory import CrawlerFactory
+
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = setup_logging()
 
 
-class DetailCrawlerService:
+class DetailCrawlerService(BaseService):
     def __init__(self):
-        self.running = True
+        super().__init__(service_name="Detail Crawler")
         self.source = os.environ.get("SOURCE", "batdongsan")
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT", "5"))
         self.batch_size = int(os.environ.get("BATCH_SIZE", "100"))
         self.retry_limit = int(os.environ.get("RETRY_LIMIT", "3"))
         self.retry_delay = int(os.environ.get("RETRY_DELAY", "5"))
+        self.crawler_type = os.environ.get("CRAWLER_TYPE", "default")
+        self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
 
         # Kafka clients
         self.consumer = KafkaConsumer(
@@ -53,9 +58,24 @@ class DetailCrawlerService:
         }
         self.failed_urls = defaultdict(int)
 
+        # Khởi tạo crawler phù hợp
+        self.crawler = self._get_crawler()
+
         # Signal handling
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
+
+    def _get_crawler(self) -> BaseDetailCrawler:
+        """Lấy crawler instance dựa trên cấu hình"""
+        try:
+            return CrawlerFactory.create_detail_crawler(
+                source=self.source,
+                crawler_type=self.crawler_type,
+                max_concurrent=self.max_concurrent,
+            )
+        except ValueError as e:
+            logger.error(f"Error creating crawler: {e}")
+            raise
 
     def stop(self, *args):
         logger.info("Stopping Detail Crawler Service...")
@@ -78,16 +98,57 @@ class DetailCrawlerService:
             success_rate = (self.stats["successful"] / self.stats["processed"]) * 100
             logger.info(f"Success rate: {success_rate:.2f}%")
 
+    def update_stats(self, stat_key):
+        """Cập nhật thống kê"""
+        if stat_key in self.stats:
+            self.stats[stat_key] += 1
+
     async def kafka_callback(self, result):
         """Send crawled data to Kafka"""
-        result.setdefault("timestamp", datetime.now().isoformat())
-        success = self.producer.send("property-data", result)
-        if success:
-            logger.info(f"[Kafka] Sent: {result.get('url', 'unknown')}")
-            self.stats["successful"] += 1
-        else:
-            logger.error(f"[Kafka] Failed: {result.get('url', 'unknown')}")
-            self.stats["failed"] += 1
+        try:
+            # Đảm bảo result có timestamp
+            result.setdefault("timestamp", datetime.now().isoformat())
+
+            # Làm sạch dữ liệu từ Chotot trước khi gửi đi
+            if result.get("source") == "chotot":
+                # Chuẩn hóa dữ liệu theo model mới (HouseDetailItem)
+                # Giữ nguyên các giá trị string, không cần chuyển đổi sang số
+
+                # Đảm bảo các trường quan trọng tồn tại
+                if "price" not in result or not result["price"]:
+                    result["price"] = "0"
+
+                if "area" not in result or not result["area"]:
+                    result["area"] = "0"
+
+                # Đảm bảo seller_info là dictionary
+                if "seller_info" not in result or not isinstance(
+                    result["seller_info"], dict
+                ):
+                    result["seller_info"] = {}
+
+                # Thêm các trường cần thiết cho mô hình dữ liệu hạ nguồn nếu chúng không tồn tại
+                result.setdefault("listing_id", "")
+                result.setdefault("url", "")
+
+            # Gửi dữ liệu tới Kafka
+            success = self.producer.send(self.output_topic, result)
+
+            if success:
+                logger.info(f"[Kafka] Sent data for: {result.get('url', 'unknown')}")
+                self.update_stats("successful")
+                return True
+            else:
+                logger.error(
+                    f"[Kafka] Failed to send data: {result.get('url', 'unknown')}"
+                )
+                self.update_stats("failed")
+                return False
+
+        except Exception as e:
+            logger.error(f"[Kafka] Error sending data: {e}")
+            self.update_stats("failed")
+            return False
 
     async def kafka_consumer_loop(self):
         """Consume URLs from Kafka and add to queue"""
@@ -138,7 +199,7 @@ class DetailCrawlerService:
                 logger.error(f"[Batch Processor] Error: {e}")
                 await asyncio.sleep(0.5)
 
-    async def worker_loop(self, playwright, worker_id: int):
+    async def worker_loop(self, worker_id: int):
         """Process URLs from the queue and crawl details"""
         logger.info(f"Starting worker {worker_id}")
 
@@ -150,14 +211,24 @@ class DetailCrawlerService:
 
                 try:
                     async with self.semaphore:
-                        self.stats["processed"] += 1
+                        self.update_stats("processed")
                         logger.info(f"[Worker {worker_id}] Processing: {url}")
-                        detail_data = await crawl_detail(playwright, url)
+
+                        # Phát hiện nguồn dữ liệu từ URL nếu không được chỉ định
+                        if "source" not in metadata:
+                            if "chotot.com" in url:
+                                metadata["source"] = "chotot"
+                            elif "batdongsan.com" in url:
+                                metadata["source"] = "batdongsan"
+
+                        # Sử dụng crawler phù hợp để crawl
+                        detail_data = await self.crawler.crawl_detail(url)
 
                     if detail_data:
                         if detail_data.get("skipped"):
                             logger.info(f"[Worker {worker_id}] Skipped: {url}")
                         else:
+                            # Thêm metadata và gửi đến Kafka
                             detail_data.update(metadata)
                             await self.kafka_callback(detail_data)
                     else:
@@ -168,18 +239,18 @@ class DetailCrawlerService:
                             logger.warning(
                                 f"[Worker {worker_id}] Retry {retry_count}/{self.retry_limit} for: {url}"
                             )
-                            self.stats["retries"] += 1
+                            self.update_stats("retries")
                             await asyncio.sleep(self.retry_delay)
                             await self.url_queue.put(message)
                         else:
                             logger.error(
                                 f"[Worker {worker_id}] Max retries reached for: {url}"
                             )
-                            self.stats["failed"] += 1
+                            self.update_stats("failed")
 
                 except Exception as e:
                     logger.error(f"[Worker {worker_id}] Processing error: {e}")
-                    self.stats["failed"] += 1
+                    self.update_stats("failed")
 
                 self.url_queue.task_done()
 
@@ -200,24 +271,22 @@ class DetailCrawlerService:
 
     async def run_async(self):
         logger.info(
-            f"Service started with concurrency={self.max_concurrent}, batch_size={self.batch_size}"
+            f"Service started with concurrency={self.max_concurrent}, batch_size={self.batch_size}, source={self.source}"
         )
 
-        async with async_playwright() as playwright:
-            # Start all the required tasks
-            consumer_task = asyncio.create_task(self.kafka_consumer_loop())
-            batch_processor_task = asyncio.create_task(self.batch_processor_loop())
-            monitor_task = asyncio.create_task(self.monitor_loop())
+        # Start all the required tasks
+        consumer_task = asyncio.create_task(self.kafka_consumer_loop())
+        batch_processor_task = asyncio.create_task(self.batch_processor_loop())
+        monitor_task = asyncio.create_task(self.monitor_loop())
 
-            # Start workers with unique IDs
-            workers = [
-                asyncio.create_task(self.worker_loop(playwright, i))
-                for i in range(self.max_concurrent)
-            ]
+        # Start workers with unique IDs
+        workers = [
+            asyncio.create_task(self.worker_loop(i)) for i in range(self.max_concurrent)
+        ]
 
-            # Gather all tasks
-            all_tasks = [consumer_task, batch_processor_task, monitor_task] + workers
-            await asyncio.gather(*all_tasks)
+        # Gather all tasks
+        all_tasks = [consumer_task, batch_processor_task, monitor_task] + workers
+        await asyncio.gather(*all_tasks)
 
     def run(self):
         try:

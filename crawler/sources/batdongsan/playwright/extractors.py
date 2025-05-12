@@ -88,8 +88,8 @@ def extract_coordinates_from_iframe(soup):
         match = re.search(r"q=([0-9.-]+),([0-9.-]+)", data_src)
         if match:
             lat, lng = match.groups()
-            return f"{lat},{lng}"
-    return None
+            return str(lat), str(lng)
+    return None, None
 
 
 def extract_detail_info(html_content: str):
@@ -100,7 +100,7 @@ def extract_detail_info(html_content: str):
         soup, "span.re__pr-short-description.js__pr-address"
     )
     price_per_m2 = extract_price_per_m2_alt(soup)
-    coordinates = extract_coordinates_from_iframe(soup)
+    latitude, longitude = extract_coordinates_from_iframe(soup)
     description = extract_text(soup, "div.re__section-body.re__detail-content")
     specs = extract_specifications(soup)
 
@@ -110,7 +110,8 @@ def extract_detail_info(html_content: str):
         price=specs.get("price"),
         area=specs.get("area"),
         price_per_m2=price_per_m2,
-        coordinates=coordinates,
+        latitude=latitude,
+        longitude=longitude,
         bedroom=specs.get("bedroom"),
         bathroom=specs.get("bathroom"),
         house_direction=specs.get("house_direction"),

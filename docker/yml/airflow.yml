@@ -12,6 +12,8 @@ x-airflow-common: &airflow-common
         - ../../data_processing/airflow/dags:/opt/airflow/dags
         - ../../data_processing/airflow/logs:/opt/airflow/logs
         - ../../data_processing/airflow/plugins:/opt/airflow/plugins
+        - ../../crawler:/opt/airflow/crawler
+        - ../../data_processing:/opt/airflow/data_processing
         - /var/run/docker.sock:/var/run/docker.sock
     user: '${AIRFLOW_UID}:0'
 
@@ -34,8 +36,11 @@ services:
         command:
             - -c
             - |
-                mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
-                chmod -R 777 /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
+                mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/data
+                chmod -R 777 /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/data
+                pip install confluent-kafka
+                pip install playwright
+                pip install python-dotenv
                 airflow db init && \
                 airflow db migrate && \
                 airflow users create \

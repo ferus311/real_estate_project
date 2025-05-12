@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # Import các services từ các file yml riêng biệt
+
+  # Import từ hdfs.yml
+  namenode:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: namenode
+
+  datanode1:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: datanode1
+
+  datanode2:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: datanode2
+
+  datanode3:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: datanode3
+
+  resourcemanager:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: resourcemanager
+
+  nodemanager1:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: nodemanager1
+
+  historyserver:
+    extends:
+      file: ./docker/yml/hdfs.yml
+      service: historyserver
+
+  # Import từ kafka.yml
+  zoo1:
+    extends:
+      file: ./docker/yml/kafka.yml
+      service: zoo1
+
+  kafka1:
+    extends:
+      file: ./docker/yml/kafka.yml
+      service: kafka1
+
+  # Import từ airflow.yml
+  postgres:
+    extends:
+      file: ./docker/yml/airflow.yml
+      service: postgres
+
+  airflow-init:
+    extends:
+      file: ./docker/yml/airflow.yml
+      service: airflow-init
+
+  airflow-webserver:
+    extends:
+      file: ./docker/yml/airflow.yml
+      service: airflow-webserver
+
+  airflow-scheduler:
+    extends:
+      file: ./docker/yml/airflow.yml
+      service: airflow-scheduler
+
+  # Import từ crawler.yml
+  crawler-shell:
+    extends:
+      file: ./docker/yml/crawler.yml
+      service: crawler-shell
+
+# Các networks được sử dụng bởi các services
+networks:
+  hdfs_network:
+    name: hdfs_network
+  kafka_network:
+    name: kafka_network
+
+# Các volumes được sử dụng bởi các services
+volumes:
+  hadoop_historyserver:
+  airflow_postgres_data:
