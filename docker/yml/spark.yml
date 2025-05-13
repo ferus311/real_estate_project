@@ -8,7 +8,7 @@ services:
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
         ports:
             - '7077:7077'
-            - '8181:8080' # Spark UI
+            - '8181:8080'
         volumes:
             - ../../data_processing/spark/jobs:/opt/bitnami/spark/jobs
         networks:

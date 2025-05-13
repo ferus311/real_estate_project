@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-crawler-common: &crawler-common
     build:
         context: ../../crawler

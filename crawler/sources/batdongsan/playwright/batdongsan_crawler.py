@@ -4,7 +4,12 @@ from typing import List, Optional, Callable, Dict, Any
 from playwright.async_api import async_playwright
 
 from common.base.base_crawler import BaseCrawler
-from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from common.utils.checkpoint import (
+    load_checkpoint,
+    save_checkpoint,
+    save_checkpoint_with_timestamp,
+    should_force_crawl,
+)
 from sources.batdongsan.playwright.extractors import extract_list_items
 
 
@@ -39,10 +44,34 @@ class BatdongsanCrawler(BaseCrawler):
         """
         retries = self.max_retries
 
-        # Kiểm tra checkpoint
+        # Kiểm tra checkpoint và force crawl
         checkpoint = load_checkpoint(self.checkpoint_file)
-        if str(page_number) in checkpoint and checkpoint[str(page_number)]:
-            print(f"[Batdongsan List] Page {page_number} already crawled")
+        page_key = str(page_number)
+
+        # Nếu không phải force crawl và đã có trong checkpoint, bỏ qua
+        if not self.force_crawl and page_key in checkpoint:
+            checkpoint_data = checkpoint[page_key]
+            # Hỗ trợ cả định dạng legacy và mới
+            if isinstance(checkpoint_data, bool) and checkpoint_data:
+                print(
+                    f"[Batdongsan List] Skipping page {page_number} (already crawled)"
+                )
+                return []
+            elif isinstance(checkpoint_data, dict) and checkpoint_data.get(
+                "success", False
+            ):
+                print(
+                    f"[Batdongsan List] Skipping page {page_number} (already crawled)"
+                )
+                return []
+
+        # Nếu là force crawl nhưng chưa đến thời gian để crawl lại
+        if self.force_crawl and not should_force_crawl(
+            self.checkpoint_file, page_number, self.force_crawl_interval
+        ):
+            print(
+                f"[Batdongsan List] Skipping page {page_number} (force crawl interval not reached)"
+            )
             return []
 
         while retries > 0:
@@ -76,7 +105,7 @@ class BatdongsanCrawler(BaseCrawler):
 
                     if not listings:
                         print(f"[Batdongsan List] Page {page_number} - No data found")
-                        save_checkpoint(
+                        save_checkpoint_with_timestamp(
                             self.checkpoint_file, page_number, success=False
                         )
                         return []
@@ -84,7 +113,9 @@ class BatdongsanCrawler(BaseCrawler):
                     print(
                         f"[Batdongsan List] Page {page_number} - {len(listings)} listings"
                     )
-                    save_checkpoint(self.checkpoint_file, page_number, success=True)
+                    save_checkpoint_with_timestamp(
+                        self.checkpoint_file, page_number, success=True
+                    )
 
                     # Chuyển đối tượng thành dictionary
                     return [
@@ -105,11 +136,14 @@ class BatdongsanCrawler(BaseCrawler):
                         print(f"[Batdongsan List] Error closing browser: {e}")
 
         # Đánh dấu thất bại trong checkpoint
-        save_checkpoint(self.checkpoint_file, page_number, success=False)
+        save_checkpoint_with_timestamp(self.checkpoint_file, page_number, success=False)
         return []
 
     async def process_items(
-        self, items: List[Dict[str, Any]], callback: Optional[Callable] = None
+        self,
+        items: List[Dict[str, Any]],
+        callback: Optional[Callable] = None,
+        page_number: Optional[int] = None,
     ) -> int:
         """
         Xử lý các items đã crawl được
@@ -117,6 +151,7 @@ class BatdongsanCrawler(BaseCrawler):
         Args:
             items: Danh sách các items đã crawl được
             callback: Hàm callback để xử lý kết quả
+            page_number: Số trang đang xử lý, để lưu checkpoint
 
         Returns:
             int: Số lượng items đã xử lý thành công

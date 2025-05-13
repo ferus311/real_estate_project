@@ -53,10 +53,8 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
-mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
-mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
-mkdir -p ${PROJECT_DIR}/docker/volumes/zookeeper
-mkdir -p ${PROJECT_DIR}/docker/volumes/kafka
+# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
+# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
 
 # Kiểm tra xem các networks đã tồn tại chưa
 echo -e "${BLUE}[INFO]${NC} Kiểm tra và tạo Docker networks..."
@@ -82,7 +80,7 @@ wait_for_service "namenode" "9870" "localhost" 120
 
 # Khởi động các datanode
 echo -e "${BLUE}[INFO]${NC} Khởi động các datanode..."
-docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d datanode1 datanode2 datanode3
+docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d datanode1
 check_error "Không thể khởi động datanode"
 
 # Khởi động Kafka
@@ -109,4 +107,5 @@ check_error "Không thể khởi động crawler shell"
 echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
 echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"
 echo -e "${GREEN}[INFO]${NC} HDFS UI: http://localhost:9870"
+echo -e "${GREEN}[INFO]${NC} Kafka UI: http://localhost:8282"
 echo -e "${GREEN}[INFO]${NC} Để truy cập crawler shell: docker exec -it crawler-shell bash"

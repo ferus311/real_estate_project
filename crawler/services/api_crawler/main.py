@@ -29,10 +29,10 @@ class ApiCrawlerService(BaseService):
     def __init__(self):
         super().__init__(service_name="API Crawler")
         self.source = os.environ.get("SOURCE", "chotot")
-        self.max_concurrent = int(os.environ.get("MAX_CONCURRENT", "10"))
+        self.max_concurrent = int(os.environ.get("MAX_CONCURRENT", "5"))
         self.start_page = int(os.environ.get("START_PAGE", "1"))
         self.end_page = int(os.environ.get("END_PAGE", "5"))
-        self.category = os.environ.get("CATEGORY", "1000")  # Mặc định: BĐS
+        self.category = os.environ.get("CHOTOT_CATEGORY", "1000")  # Mặc định: BĐS
         self.region = os.environ.get("REGION", None)
         self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
         self.interval = int(os.environ.get("INTERVAL", "3600"))  # Mặc định: 1 giờ
@@ -97,45 +97,41 @@ class ApiCrawlerService(BaseService):
 
     async def kafka_callback(self, result):
         """Gửi dữ liệu đã crawl đến Kafka"""
-        try:
-            # Đảm bảo result có timestamp
-            result.setdefault("timestamp", datetime.now().isoformat())
+        max_retries = 3
+        retry_count = 0
+        retry_delay = 0.5  # Thời gian chờ giữa các lần retry (giây)
 
-            # Đảm bảo các trường quan trọng tồn tại cho model HouseDetailItem
-            if "price" not in result or not result["price"]:
-                result["price"] = "0"
+        while retry_count < max_retries:
+            try:
+                # Gửi dữ liệu tới Kafka
+                success = self.producer.send(self.output_topic, result)
 
-            if "area" not in result or not result["area"]:
-                result["area"] = "0"
-
-            # Đảm bảo seller_info là dictionary
-            if "seller_info" not in result or not isinstance(
-                result["seller_info"], dict
-            ):
-                result["seller_info"] = {}
-
-            # Thêm các trường cần thiết cho mô hình dữ liệu nếu chúng không tồn tại
-            result.setdefault("listing_id", "")
-            result.setdefault("url", "")
-
-            # Gửi dữ liệu tới Kafka
-            success = self.producer.send(self.output_topic, result)
-
-            if success:
-                logger.info(f"[Kafka] Sent data for: {result.get('url', 'unknown')}")
-                self.update_stats("successful")
-                return True
-            else:
+                if success:
+                    logger.info(
+                        f"[Kafka] Sent data for: {result.get('url', 'unknown')}"
+                    )
+                    self.update_stats("successful")
+                    return True
+                else:
+                    retry_count += 1
+                    logger.warning(
+                        f"[Kafka] Failed to send data (attempt {retry_count}/{max_retries}): {result.get('url', 'unknown')}"
+                    )
+                    if retry_count < max_retries:
+                        await asyncio.sleep(
+                            retry_delay * retry_count
+                        )  # Tăng thời gian chờ sau mỗi lần retry
+            except Exception as e:
+                retry_count += 1
                 logger.error(
-                    f"[Kafka] Failed to send data: {result.get('url', 'unknown')}"
+                    f"[Kafka] Error sending data (attempt {retry_count}/{max_retries}): {e}"
                 )
-                self.update_stats("failed")
-                return False
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_delay * retry_count)
 
-        except Exception as e:
-            logger.error(f"[Kafka] Error sending data: {e}")
-            self.update_stats("failed")
-            return False
+        # Nếu đã hết số lần retry mà vẫn thất bại
+        self.update_stats("failed")
+        return False
 
     async def crawl_once(self):
         """Chạy crawl một lần"""

@@ -1,0 +1,19 @@
+pandas
+numpy
+
+pyarrow
+hdfs
+pyhdfs
+
+kafka-python
+confluent-kafka
+
+# selnium
+# webdriver-manager
+playwright
+beautifulsoup4
+requests
+# scrapy
+aiohttp
+dotenv
+

@@ -18,6 +18,7 @@ from common.utils.logging_utils import setup_logging
 from common.base.base_service import BaseService
 from common.base.base_crawler import BaseCrawler
 from common.factory.crawler_factory import CrawlerFactory
+from common.utils.checkpoint import save_checkpoint_with_timestamp, should_force_crawl
 from sources.batdongsan.playwright.batdongsan_crawler import BatdongsanCrawler
 from sources.chotot.api.chotot_api_crawler import ChototApiCrawler
 
@@ -52,6 +53,15 @@ class ListCrawlerService(BaseService):
         self.start_page = int(os.environ.get("START_PAGE", "1"))
         self.end_page = int(os.environ.get("END_PAGE", "500"))
         self.output_file = os.environ.get("OUTPUT_FILE", None)
+        # Force crawl options
+        self.force_crawl = os.environ.get("FORCE_CRAWL", "false").lower() == "true"
+        self.force_crawl_interval = float(
+            os.environ.get("FORCE_CRAWL_INTERVAL_HOURS", "24")
+        )
+        self.checkpoint_file = os.environ.get(
+            "LIST_CHECKPOINT_FILE", f"checkpoint/{self.source}_list_checkpoint.json"
+        )
+
         self.producer = KafkaProducer() if not self.output_file else None
         self.collected_data = []  # Lưu dữ liệu khi xuất ra file
 
@@ -78,22 +88,52 @@ class ListCrawlerService(BaseService):
     async def crawl_and_publish(self):
         """Crawl danh sách và publish URL vào Kafka theo từng batch"""
         logger.info(f"Starting crawler for pages {self.start_page} to {self.end_page}")
+        logger.info(
+            f"Force crawl: {self.force_crawl}, Interval: {self.force_crawl_interval} hours"
+        )
 
         # Định nghĩa callback để xử lý URLs realtime
-        async def kafka_publish_callback(url_batch):
+        async def kafka_publish_callback(url_batch, page_number=None):
             for url in url_batch:
                 message = {
                     "url": url,
                     "source": self.source,
                     "timestamp": datetime.now().isoformat(),
+                    "page": page_number,
                 }
                 if self.output_file:
                     self.collected_data.append(message)
                 else:
                     self.producer.send("property-urls", message)
 
+            # Lưu checkpoint với timestamp khi hoàn thành một trang
+            if page_number is not None:
+                save_checkpoint_with_timestamp(
+                    self.checkpoint_file, page_number, success=True
+                )
+
         try:
             crawler = self.get_crawler()
+
+            # Kiểm tra và cập nhật cấu hình crawl dựa trên force crawl
+            if hasattr(crawler, "set_force_crawl_options"):
+                crawler.set_force_crawl_options(
+                    force_crawl=self.force_crawl,
+                    force_crawl_interval=self.force_crawl_interval,
+                    checkpoint_file=self.checkpoint_file,
+                )
+
+            async def should_crawl_page(page_number):
+                if not self.force_crawl:
+                    return True
+                return should_force_crawl(
+                    self.checkpoint_file, page_number, self.force_crawl_interval
+                )
+
+            # Thiết lập hàm kiểm tra nếu crawler hỗ trợ
+            if hasattr(crawler, "set_should_crawl_page_callback"):
+                crawler.set_should_crawl_page_callback(should_crawl_page)
+
             url_count = await crawler.crawl_range(
                 start_page=self.start_page,
                 end_page=self.end_page,
@@ -185,6 +225,16 @@ def main():
     parser.add_argument("--start-page", type=int, help="Start page number")
     parser.add_argument("--end-page", type=int, help="End page number")
     parser.add_argument("--output-file", help="Output file path for JSON data")
+    parser.add_argument(
+        "--force-crawl",
+        action="store_true",
+        help="Force crawl pages even if they have been crawled before",
+    )
+    parser.add_argument(
+        "--force-crawl-interval",
+        type=float,
+        help="Hours after which to force crawl a page again (default: 24)",
+    )
 
     args = parser.parse_args()
 
@@ -199,6 +249,10 @@ def main():
         os.environ["END_PAGE"] = str(args.end_page)
     if args.output_file:
         os.environ["OUTPUT_FILE"] = args.output_file
+    if args.force_crawl:
+        os.environ["FORCE_CRAWL"] = "true"
+    if args.force_crawl_interval:
+        os.environ["FORCE_CRAWL_INTERVAL_HOURS"] = str(args.force_crawl_interval)
 
     service = ListCrawlerService()
 

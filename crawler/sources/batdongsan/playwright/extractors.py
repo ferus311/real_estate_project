@@ -96,7 +96,7 @@ def extract_detail_info(html_content: str):
     soup = BeautifulSoup(html_content, "html.parser")
 
     title = extract_text(soup, "h1.re__pr-title.pr-title.js__pr-title")
-    short_description = extract_text(
+    location_text = extract_text(
         soup, "span.re__pr-short-description.js__pr-address"
     )
     price_per_m2 = extract_price_per_m2_alt(soup)
@@ -106,7 +106,7 @@ def extract_detail_info(html_content: str):
 
     return HouseDetailItem(
         title=title,
-        short_description=short_description,
+        location=location_text,
         price=specs.get("price"),
         area=specs.get("area"),
         price_per_m2=price_per_m2,

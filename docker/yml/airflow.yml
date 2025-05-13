@@ -38,9 +38,6 @@ services:
             - |
                 mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/data
                 chmod -R 777 /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/data
-                pip install confluent-kafka
-                pip install playwright
-                pip install python-dotenv
                 airflow db init && \
                 airflow db migrate && \
                 airflow users create \

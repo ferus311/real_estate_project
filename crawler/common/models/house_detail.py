@@ -15,6 +15,7 @@ class HouseDetailItem:
     legal_status: Optional[str] = None
     latitude: Optional[str] = None
     longitude: Optional[str] = None
+    location: Optional[str] = None
 
     # Trường tùy chọn (đặc thù của từng trang)
     house_direction: Optional[str] = None  # Chỉ có ở batdongsan
