@@ -7,6 +7,7 @@ import argparse
 import json
 from datetime import datetime
 from typing import Dict, Type, List, Any
+from dotenv import load_dotenv
 
 # Thêm thư mục gốc vào sys.path
 sys.path.append(
@@ -19,29 +20,10 @@ from common.base.base_service import BaseService
 from common.base.base_crawler import BaseCrawler
 from common.factory.crawler_factory import CrawlerFactory
 from common.utils.checkpoint import save_checkpoint_with_timestamp, should_force_crawl
-from sources.batdongsan.playwright.batdongsan_crawler import BatdongsanCrawler
-from sources.chotot.api.chotot_api_crawler import ChototApiCrawler
 
-# from sources.batdongsan.selenium.list_crawler import crawl_listings as selenium_crawl
-
-from dotenv import load_dotenv
 
 load_dotenv()
-
 logger = setup_logging()
-
-# Registry để đăng ký các crawler
-CRAWLER_REGISTRY: Dict[str, Dict[str, Type[BaseCrawler]]] = {
-    "batdongsan": {
-        "playwright": BatdongsanCrawler,
-        # Thêm các crawler khác cho batdongsan ở đây
-    },
-    "chotot": {
-        "api": ChototApiCrawler,
-        # Thêm các crawler khác cho chotot ở đây
-    },
-    # Thêm các source khác ở đây
-}
 
 
 class ListCrawlerService(BaseService):
@@ -57,9 +39,6 @@ class ListCrawlerService(BaseService):
         self.force_crawl = os.environ.get("FORCE_CRAWL", "false").lower() == "true"
         self.force_crawl_interval = float(
             os.environ.get("FORCE_CRAWL_INTERVAL_HOURS", "24")
-        )
-        self.checkpoint_file = os.environ.get(
-            "LIST_CHECKPOINT_FILE", f"checkpoint/{self.source}_list_checkpoint.json"
         )
 
         self.producer = KafkaProducer() if not self.output_file else None

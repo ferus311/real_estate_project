@@ -53,36 +53,94 @@ echo "SOURCE: $SOURCE"
 echo "CRAWLER_TYPE: $CRAWLER_TYPE"
 echo "KAFKA_BOOTSTRAP_SERVERS: $KAFKA_BOOTSTRAP_SERVERS"
 
-# Start the specified service
-echo "Starting $SERVICE_TYPE service for source $SOURCE..."
-case $SERVICE_TYPE in
-  list_crawler)
-    echo "Running list crawler for $SOURCE with type $CRAWLER_TYPE"
-    exec python -m crawler.services.list_crawler.main
-    ;;
-  detail_crawler)
-    echo "Running detail crawler for $SOURCE with type $CRAWLER_TYPE"
-    exec python -m crawler.services.detail_crawler.main
-    ;;
-  api_crawler)
-    echo "Running API crawler for $SOURCE"
-    exec python -m crawler.services.api_crawler.main
-    ;;
-  storage_service)
-    echo "Running storage service with type $STORAGE_TYPE"
-    exec python -m crawler.services.storage.main
-    ;;
-  retry_service)
-    echo "Running retry service for $SOURCE"
-    exec python -m crawler.services.retry.main
-    ;;
-  test)
-    echo "Running test mode with command: $@"
-    exec "$@"
-    ;;
-  *)
-    echo "Unknown service: $SERVICE_TYPE"
-    echo "Available services: list_crawler, detail_crawler, api_crawler, storage_service, retry_service, test"
+# Đặt đường dẫn chứa mã nguồn
+CRAWLER_DIR="/app"
+
+# Tạo thư mục checkpoint nếu chưa tồn tại
+if [ ! -d "$CRAWLER_DIR/checkpoint" ]; then
+    mkdir -p "$CRAWLER_DIR/checkpoint"
+    echo "Created checkpoint directory: $CRAWLER_DIR/checkpoint"
+fi
+
+# Cấu hình logging
+export PYTHONUNBUFFERED=1
+export LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+# Di chuyển đến thư mục chứa mã nguồn
+cd "$CRAWLER_DIR"
+echo "Working directory: $(pwd)"
+
+# Hiển thị các biến môi trường
+echo "Environment variables:"
+echo "- KAFKA_BOOTSTRAP_SERVERS: $KAFKA_BOOTSTRAP_SERVERS"
+echo "- CRAWLER_MODE: $CRAWLER_MODE"
+echo "- CRAWLER_SOURCE: $CRAWLER_SOURCE"
+echo "- STORAGE_TYPE: $STORAGE_TYPE"
+
+# Kiểm tra biến môi trường
+if [ -z "$CRAWLER_MODE" ]; then
+    echo "Error: CRAWLER_MODE environment variable is not set. Valid values: crawler, parser, linktracker, storage, scheduler, compaction"
     exit 1
-    ;;
+fi
+
+# Cài đặt thư viện Python từ requirements.txt
+echo "Installing Python dependencies..."
+pip install -r requirements.txt
+
+# Chạy các dịch vụ dựa trên CRAWLER_MODE
+case "$CRAWLER_MODE" in
+    crawler)
+        # Kiểm tra CRAWLER_SOURCE
+        if [ -z "$CRAWLER_SOURCE" ]; then
+            echo "Error: CRAWLER_SOURCE environment variable is not set when CRAWLER_MODE=crawler"
+            exit 1
+        fi
+        echo "Starting crawler for source: $CRAWLER_SOURCE"
+        python -m sources.$CRAWLER_SOURCE.crawler.main
+        ;;
+
+    parser)
+        # Kiểm tra CRAWLER_SOURCE
+        if [ -z "$CRAWLER_SOURCE" ]; then
+            echo "Error: CRAWLER_SOURCE environment variable is not set when CRAWLER_MODE=parser"
+            exit 1
+        fi
+        echo "Starting parser for source: $CRAWLER_SOURCE"
+        python -m sources.$CRAWLER_SOURCE.parser.main
+        ;;
+
+    linktracker)
+        echo "Starting link tracker service"
+        python -m services.link_tracker_service.main
+        ;;
+
+    storage)
+        echo "Starting storage service"
+        python -m services.storage_service.main
+        ;;
+
+    scheduler)
+        echo "Starting scheduler service"
+        python -m services.scheduler_service.main
+        ;;
+
+    compaction)
+        echo "Starting file compaction service"
+        # Lấy tham số từ biến môi trường
+        MIN_DAYS=${COMPACTION_MIN_DAYS:-1}
+        MAX_DAYS=${COMPACTION_MAX_DAYS:-7}
+        MIN_FILES=${COMPACTION_MIN_FILES:-5}
+        TARGET_SIZE=${COMPACTION_TARGET_SIZE_MB:-128}
+
+        echo "Compaction parameters: min_days=$MIN_DAYS, max_days=$MAX_DAYS, min_files=$MIN_FILES, target_size=$TARGET_SIZE MB"
+        python -m services.storage_service.file_compaction --min-days $MIN_DAYS --max-days $MAX_DAYS --min-files $MIN_FILES --target-size $TARGET_SIZE
+        ;;
+
+    *)
+        echo "Error: Unknown CRAWLER_MODE value: $CRAWLER_MODE. Valid values: crawler, parser, linktracker, storage, scheduler, compaction"
+        exit 1
+        ;;
 esac
+
+# Kết thúc
+echo "Process completed."

@@ -36,11 +36,14 @@ class StorageService(BaseService):
 
         # Cấu hình từ biến môi trường
         self.storage_type = os.environ.get("STORAGE_TYPE", "local")
-        self.batch_size = int(os.environ.get("BATCH_SIZE", "100"))
-        self.flush_interval = int(os.environ.get("FLUSH_INTERVAL", "60"))  # seconds
+        self.batch_size = int(os.environ.get("BATCH_SIZE", "10000"))
+        self.flush_interval = int(os.environ.get("FLUSH_INTERVAL", "300"))  # 5 phút
         self.topic = os.environ.get("KAFKA_TOPIC", "property-data")
         self.group_id = os.environ.get("KAFKA_GROUP_ID", "storage-service-group")
         self.file_prefix = os.environ.get("FILE_PREFIX", "property_data")
+        self.file_format = os.environ.get("FILE_FORMAT", "parquet")  # parquet, csv, json
+        self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "2"))
+        self.max_file_size_mb = int(os.environ.get("MAX_FILE_SIZE_MB", "128"))
 
         # Khởi tạo Kafka consumer
         self.consumer = KafkaConsumer([self.topic], group_id=self.group_id)
@@ -48,55 +51,98 @@ class StorageService(BaseService):
         # Khởi tạo storage
         self.storage = StorageFactory.create_storage(self.storage_type)
 
-        # Buffer để tích lũy dữ liệu trước khi lưu
-        self.data_buffer = []
-        self.last_flush_time = time.time()
+        # Buffer để tích lũy dữ liệu theo nguồn
+        self.data_buffers = {}  # Dict với key là nguồn
+        self.buffer_sizes = {}  # Dict để theo dõi kích thước của mỗi buffer
+        self.last_flush_time = (
+            {}
+        )  # Dict để theo dõi thời gian flush cuối cùng của mỗi nguồn
 
         logger.info(f"Storage Service initialized with {self.storage_type} storage")
+        logger.info(
+            f"Batch size: {self.batch_size}, Flush interval: {self.flush_interval}s, "
+            f"File format: {self.file_format}, Min size: {self.min_file_size_mb}MB, Max size: {self.max_file_size_mb}MB"
+        )
 
-    def should_flush(self) -> bool:
+    def should_flush(self, source: str) -> bool:
         """
-        Kiểm tra xem có nên flush buffer không
+        Kiểm tra xem có nên flush buffer của nguồn cụ thể không
+
+        Args:
+            source: Tên nguồn dữ liệu
 
         Returns:
             bool: True nếu nên flush, False nếu không
         """
-        # Flush nếu buffer đủ lớn hoặc đã đủ thời gian
+        current_time = time.time()
+        last_flush = self.last_flush_time.get(source, 0)
+        buffer_size = len(self.data_buffers.get(source, []))
+
+        # Ước tính kích thước buffer trong MB (trung bình 1 bản ghi ~ 1KB)
+        estimated_size_mb = buffer_size * 0.001
+
+        # Flush nếu:
+        # 1. Buffer đủ lớn theo số lượng bản ghi
+        # 2. Đã đủ thời gian từ lần flush cuối
+        # 3. Ước tính kích thước đạt mức tối thiểu
+        # 4. Ước tính kích thước vượt quá mức tối đa
         return (
-            len(self.data_buffer) >= self.batch_size
-            or (time.time() - self.last_flush_time) >= self.flush_interval
+            buffer_size >= self.batch_size
+            or (current_time - last_flush) >= self.flush_interval
+            or estimated_size_mb >= self.min_file_size_mb
+            or estimated_size_mb >= self.max_file_size_mb
         )
 
-    def flush_buffer(self) -> bool:
+    def flush_buffer(self, source: str) -> bool:
         """
-        Flush buffer vào storage
+        Flush buffer của một nguồn cụ thể vào storage
+
+        Args:
+            source: Tên nguồn dữ liệu
 
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
-        if not self.data_buffer:
+        buffer = self.data_buffers.get(source, [])
+        if not buffer:
             return True
 
         try:
-            # Tạo tên file với timestamp
-            file_path = self.storage.save_data(
-                data=self.data_buffer, prefix=self.file_prefix
+            # Tạo đường dẫn chỉ phân cấp theo nguồn
+            relative_path = f"{source}"
+
+            # Tạo tên file có định dạng ngày tháng rõ ràng
+            now = datetime.now()
+            date_str = now.strftime("%Y_%m_%d")
+            time_str = now.strftime("%H%M%S")
+            file_name = f"{self.file_prefix}_{date_str}_{time_str}.{self.file_format}"
+
+            # Tạo đường dẫn đầy đủ
+            full_path = os.path.join(relative_path, file_name)
+
+            # Lưu dữ liệu
+            saved_path = self.storage.save_data(
+                data=buffer, file_name=full_path, file_format=self.file_format
             )
 
-            if file_path:
-                logger.info(f"Saved {len(self.data_buffer)} records to {file_path}")
-                self.update_stats("successful", len(self.data_buffer))
-                self.data_buffer = []  # Xóa buffer sau khi lưu
-                self.last_flush_time = time.time()
+            if saved_path:
+                buffer_size_kb = len(buffer) * 1  # Ước tính mỗi bản ghi ~1KB
+                logger.info(
+                    f"Saved {len(buffer)} records (~{buffer_size_kb/1024:.2f}MB) from {source} to {saved_path}"
+                )
+                self.update_stats("successful", len(buffer))
+                self.data_buffers[source] = []  # Xóa buffer sau khi lưu
+                self.buffer_sizes[source] = 0
+                self.last_flush_time[source] = time.time()
                 return True
             else:
-                logger.error("Failed to save data")
-                self.update_stats("failed", len(self.data_buffer))
+                logger.error(f"Failed to save data from source {source}")
+                self.update_stats("failed", len(buffer))
                 return False
 
         except Exception as e:
-            logger.error(f"Error flushing buffer: {e}")
-            self.update_stats("failed", len(self.data_buffer))
+            logger.error(f"Error flushing buffer for source {source}: {e}")
+            self.update_stats("failed", len(buffer))
             return False
 
     def process_message(self, message: Dict[str, Any]) -> bool:
@@ -110,13 +156,23 @@ class StorageService(BaseService):
             bool: True nếu xử lý thành công, False nếu thất bại
         """
         try:
-            # Thêm vào buffer
-            self.data_buffer.append(message)
+            # Xác định nguồn dữ liệu từ message
+            source = message.get("source", "unknown")
+
+            # Khởi tạo buffer cho nguồn nếu chưa có
+            if source not in self.data_buffers:
+                self.data_buffers[source] = []
+                self.buffer_sizes[source] = 0
+                self.last_flush_time[source] = time.time()
+
+            # Thêm vào buffer tương ứng
+            self.data_buffers[source].append(message)
+            self.buffer_sizes[source] = len(self.data_buffers[source])
             self.update_stats("processed")
 
             # Kiểm tra xem có nên flush không
-            if self.should_flush():
-                return self.flush_buffer()
+            if self.should_flush(source):
+                return self.flush_buffer(source)
 
             return True
 
@@ -146,9 +202,10 @@ class StorageService(BaseService):
                 if message:
                     self.process_message(message)
                 else:
-                    # Nếu không có message mới, kiểm tra xem có nên flush không
-                    if self.should_flush() and self.data_buffer:
-                        self.flush_buffer()
+                    # Nếu không có message mới, kiểm tra xem có nguồn nào cần flush không
+                    for source in list(self.data_buffers.keys()):
+                        if self.should_flush(source) and self.data_buffers[source]:
+                            self.flush_buffer(source)
 
                     # Sleep một chút để không tiêu tốn CPU
                     time.sleep(0.1)
@@ -158,9 +215,10 @@ class StorageService(BaseService):
         except Exception as e:
             logger.error(f"Error in Storage Service: {e}")
         finally:
-            # Flush buffer trước khi thoát
-            if self.data_buffer:
-                self.flush_buffer()
+            # Flush tất cả các buffer trước khi thoát
+            for source in list(self.data_buffers.keys()):
+                if self.data_buffers[source]:
+                    self.flush_buffer(source)
 
             self.consumer.close()
             self.report_stats()
@@ -172,6 +230,12 @@ def main():
     parser.add_argument("--storage-type", type=str, help="Storage type (local, hdfs)")
     parser.add_argument("--batch-size", type=int, help="Batch size for storage")
     parser.add_argument("--flush-interval", type=int, help="Flush interval in seconds")
+    parser.add_argument("--file-prefix", type=str, help="Prefix for the saved files")
+    parser.add_argument(
+        "--file-format", type=str, help="Format for saved files (parquet, csv, json)"
+    )
+    parser.add_argument("--min-file-size", type=int, help="Minimum file size in MB")
+    parser.add_argument("--max-file-size", type=int, help="Maximum file size in MB")
 
     args = parser.parse_args()
 
@@ -182,6 +246,14 @@ def main():
         os.environ["BATCH_SIZE"] = str(args.batch_size)
     if args.flush_interval:
         os.environ["FLUSH_INTERVAL"] = str(args.flush_interval)
+    if args.file_prefix:
+        os.environ["FILE_PREFIX"] = args.file_prefix
+    if args.file_format:
+        os.environ["FILE_FORMAT"] = args.file_format
+    if args.min_file_size:
+        os.environ["MIN_FILE_SIZE_MB"] = str(args.min_file_size)
+    if args.max_file_size:
+        os.environ["MAX_FILE_SIZE_MB"] = str(args.max_file_size)
 
     service = StorageService()
     service.run()

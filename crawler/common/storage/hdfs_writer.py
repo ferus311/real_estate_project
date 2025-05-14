@@ -96,6 +96,84 @@ class HDFSWriter:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def write_dataframe_to_csv(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Ghi DataFrame vào file CSV trên HDFS
+
+        Args:
+            df: DataFrame cần lưu
+            hdfs_path: Đường dẫn đích trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        # Đảm bảo thư mục cha tồn tại
+        parent_dir = os.path.dirname(hdfs_path)
+        self.ensure_directory_exists(parent_dir)
+
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            # Lưu DataFrame vào file tạm
+            df.to_csv(temp_path, index=False, encoding="utf-8")
+
+            # Upload lên HDFS
+            self.client.upload(hdfs_path, temp_path, overwrite=True)
+            logger.info(
+                f"Saved DataFrame with {len(df)} rows as CSV to HDFS: {hdfs_path}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error writing DataFrame as CSV to HDFS: {e}")
+            return False
+
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def write_dataframe_to_json(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Ghi DataFrame vào file JSON trên HDFS
+
+        Args:
+            df: DataFrame cần lưu
+            hdfs_path: Đường dẫn đích trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        # Đảm bảo thư mục cha tồn tại
+        parent_dir = os.path.dirname(hdfs_path)
+        self.ensure_directory_exists(parent_dir)
+
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            # Lưu DataFrame vào file tạm
+            df.to_json(temp_path, orient="records", force_ascii=False, lines=True)
+
+            # Upload lên HDFS
+            self.client.upload(hdfs_path, temp_path, overwrite=True)
+            logger.info(
+                f"Saved DataFrame with {len(df)} rows as JSON to HDFS: {hdfs_path}"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error writing DataFrame as JSON to HDFS: {e}")
+            return False
+
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
     def write_json_to_hdfs(self, data: Union[Dict, List], hdfs_path: str) -> bool:
         """
         Ghi dữ liệu JSON vào HDFS
@@ -165,6 +243,84 @@ class HDFSWriter:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def read_csv_from_hdfs(self, hdfs_path: str) -> Optional[pd.DataFrame]:
+        """
+        Đọc file CSV từ HDFS
+
+        Args:
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            Optional[pd.DataFrame]: DataFrame đã đọc hoặc None nếu thất bại
+        """
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            # Kiểm tra file tồn tại
+            if not self.client.status(hdfs_path, strict=False):
+                logger.error(f"File not found on HDFS: {hdfs_path}")
+                return None
+
+            # Download từ HDFS về local
+            self.client.download(hdfs_path, temp_path, overwrite=True)
+
+            # Đọc DataFrame
+            df = pd.read_csv(temp_path, encoding="utf-8")
+            logger.info(
+                f"Read DataFrame with {len(df)} rows from CSV on HDFS: {hdfs_path}"
+            )
+            return df
+
+        except Exception as e:
+            logger.error(f"Error reading CSV from HDFS: {e}")
+            return None
+
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def read_json_from_hdfs(self, hdfs_path: str) -> Optional[pd.DataFrame]:
+        """
+        Đọc file JSON từ HDFS
+
+        Args:
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            Optional[pd.DataFrame]: DataFrame đã đọc hoặc None nếu thất bại
+        """
+        # Tạo file tạm local
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            # Kiểm tra file tồn tại
+            if not self.client.status(hdfs_path, strict=False):
+                logger.error(f"File not found on HDFS: {hdfs_path}")
+                return None
+
+            # Download từ HDFS về local
+            self.client.download(hdfs_path, temp_path, overwrite=True)
+
+            # Đọc DataFrame
+            df = pd.read_json(temp_path, orient="records", lines=True)
+            logger.info(
+                f"Read DataFrame with {len(df)} rows from JSON on HDFS: {hdfs_path}"
+            )
+            return df
+
+        except Exception as e:
+            logger.error(f"Error reading JSON from HDFS: {e}")
+            return None
+
+        finally:
+            # Xóa file tạm
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
     def append_dataframe_to_parquet(self, df: pd.DataFrame, hdfs_path: str) -> bool:
         """
         Thêm DataFrame vào file Parquet hiện có
@@ -200,6 +356,80 @@ class HDFSWriter:
 
         except Exception as e:
             logger.error(f"Error appending DataFrame to HDFS file: {e}")
+            return False
+
+    def append_dataframe_to_csv(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Thêm DataFrame vào file CSV hiện có
+
+        Args:
+            df: DataFrame cần thêm
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            # Kiểm tra file tồn tại
+            file_exists = self.client.status(hdfs_path, strict=False) is not None
+
+            if file_exists:
+                # Đọc DataFrame hiện có
+                existing_df = self.read_csv_from_hdfs(hdfs_path)
+                if existing_df is None:
+                    logger.warning(
+                        f"Could not read existing file, creating new one: {hdfs_path}"
+                    )
+                    return self.write_dataframe_to_csv(df, hdfs_path)
+
+                # Gộp DataFrame
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+
+                # Ghi lại file
+                return self.write_dataframe_to_csv(combined_df, hdfs_path)
+            else:
+                # File không tồn tại, tạo mới
+                return self.write_dataframe_to_csv(df, hdfs_path)
+
+        except Exception as e:
+            logger.error(f"Error appending DataFrame to CSV file on HDFS: {e}")
+            return False
+
+    def append_dataframe_to_json(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Thêm DataFrame vào file JSON hiện có
+
+        Args:
+            df: DataFrame cần thêm
+            hdfs_path: Đường dẫn file trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            # Kiểm tra file tồn tại
+            file_exists = self.client.status(hdfs_path, strict=False) is not None
+
+            if file_exists:
+                # Đọc DataFrame hiện có
+                existing_df = self.read_json_from_hdfs(hdfs_path)
+                if existing_df is None:
+                    logger.warning(
+                        f"Could not read existing file, creating new one: {hdfs_path}"
+                    )
+                    return self.write_dataframe_to_json(df, hdfs_path)
+
+                # Gộp DataFrame
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+
+                # Ghi lại file
+                return self.write_dataframe_to_json(combined_df, hdfs_path)
+            else:
+                # File không tồn tại, tạo mới
+                return self.write_dataframe_to_json(df, hdfs_path)
+
+        except Exception as e:
+            logger.error(f"Error appending DataFrame to JSON file on HDFS: {e}")
             return False
 
     def list_files(self, hdfs_dir: str, pattern: str = None) -> List[str]:

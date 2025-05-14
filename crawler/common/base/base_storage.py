@@ -3,17 +3,23 @@ from typing import List, Dict, Any, Optional, Union
 import pandas as pd
 from datetime import datetime
 
+
 class BaseStorage(ABC):
     """
     Lớp cơ sở cho tất cả các storage
     """
+
     def __init__(self, base_path: str = None):
         self.base_path = base_path
 
     @abstractmethod
-    def save_data(self, data: Union[List[Dict[str, Any]], pd.DataFrame],
-                 file_name: Optional[str] = None,
-                 prefix: str = "data") -> str:
+    def save_data(
+        self,
+        data: Union[List[Dict[str, Any]], pd.DataFrame],
+        file_name: Optional[str] = None,
+        prefix: str = "data",
+        file_format: str = "parquet",
+    ) -> str:
         """
         Lưu dữ liệu vào storage
 
@@ -21,6 +27,7 @@ class BaseStorage(ABC):
             data: Dữ liệu cần lưu (list of dicts hoặc DataFrame)
             file_name: Tên file cụ thể (nếu None sẽ tự động tạo)
             prefix: Tiền tố cho tên file nếu tự động tạo
+            file_format: Định dạng file để lưu (parquet, csv, json)
 
         Returns:
             str: Đường dẫn đến file đã lưu
@@ -41,8 +48,9 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    def append_data(self, data: Union[List[Dict[str, Any]], pd.DataFrame],
-                   file_path: str) -> bool:
+    def append_data(
+        self, data: Union[List[Dict[str, Any]], pd.DataFrame], file_path: str
+    ) -> bool:
         """
         Thêm dữ liệu vào file hiện có
 
@@ -56,8 +64,9 @@ class BaseStorage(ABC):
         pass
 
     @abstractmethod
-    def list_files(self, prefix: Optional[str] = None,
-                  file_format: Optional[str] = None) -> List[str]:
+    def list_files(
+        self, prefix: Optional[str] = None, file_format: Optional[str] = None
+    ) -> List[str]:
         """
         Liệt kê các file trong storage
 
@@ -83,7 +92,9 @@ class BaseStorage(ABC):
         """
         pass
 
-    def generate_file_name(self, prefix: str = "data", file_format: str = "parquet") -> str:
+    def generate_file_name(
+        self, prefix: str = "data", file_format: str = "parquet"
+    ) -> str:
         """
         Tạo tên file với timestamp
 
@@ -97,7 +108,9 @@ class BaseStorage(ABC):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"{prefix}_{timestamp}.{file_format}"
 
-    def _convert_to_dataframe(self, data: Union[List[Dict[str, Any]], pd.DataFrame]) -> pd.DataFrame:
+    def _convert_to_dataframe(
+        self, data: Union[List[Dict[str, Any]], pd.DataFrame]
+    ) -> pd.DataFrame:
         """
         Chuyển đổi dữ liệu thành DataFrame
 
@@ -114,7 +127,9 @@ class BaseStorage(ABC):
         else:
             raise ValueError("Data must be a list of dictionaries or a DataFrame")
 
-    def get_latest_file(self, prefix: str = "data", file_format: str = "parquet") -> Optional[str]:
+    def get_latest_file(
+        self, prefix: str = "data", file_format: str = "parquet"
+    ) -> Optional[str]:
         """
         Lấy file mới nhất theo prefix và format
 

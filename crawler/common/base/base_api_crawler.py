@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Union
 import asyncio
 import aiohttp
 import random
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class BaseApiCrawler(ABC):
@@ -21,35 +24,20 @@ class BaseApiCrawler(ABC):
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+        self.max_retries = 3
 
-    @abstractmethod
-    async def get_api_url(self, identifier: str) -> str:
+    def get_random_delay(self, min_delay: int = 1, max_delay: int = 3) -> float:
         """
-        Tạo URL API dựa trên identifier
+        Tạo độ trễ ngẫu nhiên giữa các lần gọi API
 
         Args:
-            identifier: Định danh của item cần crawl (ID, URL, etc.)
+            min_delay: Thời gian tối thiểu (giây)
+            max_delay: Thời gian tối đa (giây)
 
         Returns:
-            str: URL API
+            float: Độ trễ ngẫu nhiên
         """
-        pass
-
-    @abstractmethod
-    async def parse_response(
-        self, response_data: Dict[str, Any], identifier: str
-    ) -> Dict[str, Any]:
-        """
-        Phân tích dữ liệu API response
-
-        Args:
-            response_data: Dữ liệu từ API
-            identifier: Định danh của item
-
-        Returns:
-            Dict: Dữ liệu đã được phân tích
-        """
-        pass
+        return random.uniform(min_delay, max_delay)
 
     async def fetch_api(
         self, session: aiohttp.ClientSession, url: str
@@ -64,7 +52,7 @@ class BaseApiCrawler(ABC):
         Returns:
             Dict: Dữ liệu API, hoặc None nếu có lỗi
         """
-        retries = 3
+        retries = self.max_retries
 
         while retries > 0:
             try:
@@ -72,85 +60,99 @@ class BaseApiCrawler(ABC):
                     if response.status == 200:
                         return await response.json()
                     elif response.status == 429:  # Too Many Requests
-                        wait_time = random.uniform(2, 5)
-                        print(f"Rate limited. Waiting {wait_time:.2f}s...")
+                        wait_time = self.get_random_delay(2, 5)
+                        logger.warning(f"Rate limited. Waiting {wait_time:.2f}s...")
                         await asyncio.sleep(wait_time)
                         retries -= 1
                     else:
-                        print(f"API error: {response.status} for {url}")
+                        logger.error(f"API error: {response.status} for {url}")
                         retries -= 1
                         await asyncio.sleep(1)
             except Exception as e:
-                print(f"Request error: {e} for {url}")
+                logger.error(f"Request error: {e} for {url}")
                 retries -= 1
                 await asyncio.sleep(1)
 
         return None
 
-    async def crawl_item(self, identifier: str) -> Optional[Dict[str, Any]]:
-        """
-        Crawl một item qua API
-
-        Args:
-            identifier: Định danh của item
-
-        Returns:
-            Dict: Dữ liệu item, hoặc None nếu có lỗi
-        """
-        try:
-            api_url = await self.get_api_url(identifier)
-
-            async with aiohttp.ClientSession() as session:
-                response_data = await self.fetch_api(session, api_url)
-
-                if response_data:
-                    result = await self.parse_response(response_data, identifier)
-                    result.update(
-                        {
-                            "source": self.source,
-                            "crawl_timestamp": datetime.now().isoformat(),
-                            "identifier": identifier,
-                        }
-                    )
-                    return result
-
-            return None
-        except Exception as e:
-            print(f"Error crawling {identifier}: {e}")
-            return None
-
-    async def crawl_batch(
-        self, identifiers: List[str], callback: Optional[Callable] = None
+    @abstractmethod
+    async def crawl_listings(
+        self,
+        page: int = 1,
+        limit: int = 50,
+        callback: Optional[Callable] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
-        Crawl một batch các identifiers
+        Crawl danh sách các listings từ một trang
 
         Args:
-            identifiers: Danh sách identifiers cần crawl
+            page: Số trang
+            limit: Số lượng kết quả mỗi trang
             callback: Hàm callback để xử lý kết quả
+            **kwargs: Các tham số bổ sung khác tùy theo nguồn
 
         Returns:
-            Dict: Thống kê kết quả crawl
+            Dict[str, Any]: Thống kê kết quả crawl
         """
+        pass
+
+    async def crawl_range(
+        self,
+        start_page: int = 1,
+        end_page: int = 5,
+        limit: int = 50,
+        callback: Optional[Callable] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Crawl nhiều trang danh sách
+
+        Args:
+            start_page: Trang bắt đầu
+            end_page: Trang kết thúc
+            limit: Số lượng kết quả mỗi trang
+            callback: Hàm callback để xử lý kết quả
+            **kwargs: Các tham số bổ sung khác tùy theo nguồn
+
+        Returns:
+            Dict[str, Any]: Thống kê kết quả crawl
+        """
+        total_results = {"total": 0, "successful": 0, "failed": 0}
+        tasks = []
+
+        # Tạo semaphore để giới hạn số lượng tasks chạy đồng thời
         sem = asyncio.Semaphore(self.max_concurrent)
-        results = {"total": len(identifiers), "successful": 0, "failed": 0}
 
-        async def process_identifier(identifier: str) -> bool:
+        async def process_page(page_number):
             async with sem:
-                try:
-                    result = await self.crawl_item(identifier)
-                    if result and callback:
-                        await callback(result)
-                        results["successful"] += 1
-                        return True
-                    results["failed"] += 1
-                    return False
-                except Exception as e:
-                    print(f"Error processing {identifier}: {e}")
-                    results["failed"] += 1
-                    return False
+                # Thêm độ trễ ngẫu nhiên để tránh bị chặn
+                delay = self.get_random_delay(1, 2)
+                if page_number > start_page:
+                    await asyncio.sleep(delay)
 
-        tasks = [process_identifier(id) for id in identifiers]
-        await asyncio.gather(*tasks)
+                logger.info(f"Crawling page {page_number}...")
+                result = await self.crawl_listings(
+                    page=page_number, limit=limit, callback=callback, **kwargs
+                )
 
-        return results
+                return result
+
+        # Tạo task cho mỗi trang
+        for page in range(start_page, end_page + 1):
+            tasks.append(asyncio.create_task(process_page(page)))
+
+        # Chạy tất cả các tasks và đợi kết quả
+        results = await asyncio.gather(*tasks)
+
+        # Tổng hợp kết quả
+        for result in results:
+            total_results["total"] += result["total"]
+            total_results["successful"] += result["successful"]
+            total_results["failed"] += result["failed"]
+
+        logger.info(
+            f"Range crawl summary: {end_page-start_page+1} pages, {total_results['total']} listings found, "
+            f"{total_results['successful']} successful, {total_results['failed']} failed"
+        )
+        return total_results

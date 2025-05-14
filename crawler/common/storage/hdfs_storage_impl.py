@@ -47,6 +47,7 @@ class HDFSStorage(BaseStorage):
         data: Union[List[Dict[str, Any]], pd.DataFrame],
         file_name: Optional[str] = None,
         prefix: str = "data",
+        file_format: str = "parquet",
     ) -> str:
         """
         Lưu dữ liệu vào HDFS
@@ -55,6 +56,7 @@ class HDFSStorage(BaseStorage):
             data: Dữ liệu cần lưu (list of dicts hoặc DataFrame)
             file_name: Tên file cụ thể (nếu None sẽ tự động tạo)
             prefix: Tiền tố cho tên file nếu tự động tạo
+            file_format: Định dạng file để lưu (parquet, csv, json)
 
         Returns:
             str: Đường dẫn đến file đã lưu trên HDFS
@@ -68,17 +70,31 @@ class HDFSStorage(BaseStorage):
 
         # Tạo tên file nếu không được cung cấp
         if not file_name:
-            file_name = self.generate_file_name(prefix, "parquet")
+            file_name = self.generate_file_name(prefix, file_format)
 
-        # Đảm bảo file_name có định dạng đúng
-        if not file_name.endswith(".parquet") and not file_name.endswith(".csv"):
-            file_name += ".parquet"
+        # Đảm bảo file_name có đuôi phù hợp với định dạng
+        if not file_name.endswith(f".{file_format}"):
+            file_name += f".{file_format}"
 
         # Tạo đường dẫn đầy đủ trên HDFS
         hdfs_path = os.path.join(self.base_path, file_name)
 
-        # Sử dụng HDFSWriter để ghi DataFrame vào HDFS
-        success = self.writer.write_dataframe_to_parquet(df, hdfs_path)
+        # Sử dụng HDFSWriter để ghi DataFrame vào HDFS theo định dạng
+        success = False
+
+        if file_format == "parquet":
+            success = self.writer.write_dataframe_to_parquet(df, hdfs_path)
+        elif file_format == "csv":
+            success = self.writer.write_dataframe_to_csv(df, hdfs_path)
+        elif file_format == "json":
+            success = self.writer.write_dataframe_to_json(df, hdfs_path)
+        else:
+            logger.warning(
+                f"Unsupported file format: {file_format}, using parquet instead"
+            )
+            # Sửa lại đuôi file
+            hdfs_path = hdfs_path.rsplit(".", 1)[0] + ".parquet"
+            success = self.writer.write_dataframe_to_parquet(df, hdfs_path)
 
         if success:
             return hdfs_path
@@ -97,8 +113,20 @@ class HDFSStorage(BaseStorage):
         if not self.file_exists(file_path):
             raise FileNotFoundError(f"File not found on HDFS: {file_path}")
 
-        # Sử dụng HDFSWriter để đọc DataFrame từ HDFS
-        df = self.writer.read_parquet_from_hdfs(file_path)
+        # Xác định định dạng file từ đuôi file
+        file_format = file_path.rsplit(".", 1)[-1].lower()
+
+        # Đọc dữ liệu theo định dạng file
+        df = None
+        if file_format == "parquet":
+            df = self.writer.read_parquet_from_hdfs(file_path)
+        elif file_format == "csv":
+            df = self.writer.read_csv_from_hdfs(file_path)
+        elif file_format == "json":
+            df = self.writer.read_json_from_hdfs(file_path)
+        else:
+            logger.warning(f"Unsupported file format: {file_format}, trying as parquet")
+            df = self.writer.read_parquet_from_hdfs(file_path)
 
         if df is None:
             raise IOError(f"Failed to read data from HDFS: {file_path}")
@@ -121,8 +149,21 @@ class HDFSStorage(BaseStorage):
         # Chuyển đổi dữ liệu mới thành DataFrame
         new_df = self._convert_to_dataframe(data)
 
-        # Sử dụng HDFSWriter để append DataFrame vào file hiện có
-        return self.writer.append_dataframe_to_parquet(new_df, file_path)
+        # Xác định định dạng file từ đuôi file
+        file_format = file_path.rsplit(".", 1)[-1].lower()
+
+        # Append dữ liệu theo định dạng file
+        if file_format == "parquet":
+            return self.writer.append_dataframe_to_parquet(new_df, file_path)
+        elif file_format == "csv":
+            return self.writer.append_dataframe_to_csv(new_df, file_path)
+        elif file_format == "json":
+            return self.writer.append_dataframe_to_json(new_df, file_path)
+        else:
+            logger.warning(
+                f"Unsupported file format for append: {file_format}, trying as parquet"
+            )
+            return self.writer.append_dataframe_to_parquet(new_df, file_path)
 
     def list_files(
         self, prefix: Optional[str] = None, file_format: Optional[str] = None
