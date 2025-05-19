@@ -37,17 +37,25 @@ class ApiCrawlerService(BaseService):
         self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
         self.interval = int(os.environ.get("INTERVAL", "3600"))  # Mặc định: 1 giờ
 
+        # Cấu hình dừng sớm khi gặp trang trống liên tiếp
+        self.stop_on_empty = os.environ.get("STOP_ON_EMPTY", "true").lower() == "true"
+        self.max_empty_pages = int(os.environ.get("MAX_EMPTY_PAGES", "2"))
+
         # Khởi tạo Kafka producer
         self.producer = KafkaProducer()
 
         # Trạng thái chạy
         self.running = True
 
-        # Thống kê
+        # Thống kê chi tiết hơn
         self.stats = {
             "processed": 0,
             "successful": 0,
             "failed": 0,
+            "pages_processed": 0,
+            "total_pages_requested": 0,
+            "empty_pages": 0,
+            "early_stops": 0,
             "start_time": time.time(),
         }
 
@@ -76,19 +84,38 @@ class ApiCrawlerService(BaseService):
         self.report_stats()
 
     def report_stats(self):
-        """Báo cáo thống kê"""
+        """Báo cáo thống kê chi tiết hơn"""
         runtime = time.time() - self.stats["start_time"]
         logger.info(f"=== Crawler Statistics ===")
         logger.info(f"Runtime: {runtime:.2f} seconds")
         logger.info(f"Processed: {self.stats['processed']} items")
         logger.info(f"Successful: {self.stats['successful']} items")
         logger.info(f"Failed: {self.stats['failed']} items")
+        logger.info(
+            f"Pages Processed: {self.stats['pages_processed']} of {self.stats['total_pages_requested']} requested"
+        )
+
+        if self.stats.get("empty_pages", 0) > 0:
+            logger.info(f"Empty pages encountered: {self.stats['empty_pages']}")
+
+        if self.stats.get("early_stops", 0) > 0:
+            logger.info(f"Early stops due to empty pages: {self.stats['early_stops']}")
+
+        pages_saved = (
+            self.stats["total_pages_requested"] - self.stats["pages_processed"]
+        )
+        if pages_saved > 0:
+            logger.info(f"Pages saved by early stopping: {pages_saved}")
 
         if self.stats["processed"] > 0:
             rate = self.stats["processed"] / runtime
             logger.info(f"Processing rate: {rate:.2f} items/second")
             success_rate = (self.stats["successful"] / self.stats["processed"]) * 100
             logger.info(f"Success rate: {success_rate:.2f}%")
+
+        if self.stats["pages_processed"] > 0:
+            items_per_page = self.stats["processed"] / self.stats["pages_processed"]
+            logger.info(f"Average items per page: {items_per_page:.2f}")
 
     def update_stats(self, stat_key, count=1):
         """Cập nhật thống kê"""
@@ -134,23 +161,46 @@ class ApiCrawlerService(BaseService):
         return False
 
     async def crawl_once(self):
-        """Chạy crawl một lần"""
+        """Chạy crawl một lần với khả năng dừng sớm khi gặp nhiều trang trống liên tiếp"""
         logger.info(
             f"Starting API crawl for {self.source} from page {self.start_page} to {self.end_page}"
         )
+        logger.info(
+            f"Stop on empty: {self.stop_on_empty}, Max empty pages: {self.max_empty_pages}"
+        )
 
         try:
+            # Lưu tổng số trang yêu cầu để thống kê hiệu quả của việc dừng sớm
+            total_pages_requested = self.end_page - self.start_page + 1
+            self.stats["total_pages_requested"] = total_pages_requested
+
             # Crawl range sử dụng callback để gửi từng item lên Kafka
+            # Thêm tham số stop_on_empty và max_empty_pages để sử dụng cơ chế dừng sớm
             results = await self.crawler.crawl_range(
                 start_page=self.start_page,
                 end_page=self.end_page,
                 region=self.region,
                 category=self.category,
                 callback=self.kafka_callback,
+                stop_on_empty=self.stop_on_empty,
+                max_empty_pages=self.max_empty_pages,
             )
 
             # Cập nhật thống kê
             self.update_stats("processed", results["total"])
+            self.update_stats("pages_processed", results["pages_processed"])
+
+            # Cập nhật thống kê về dừng sớm
+            if results["pages_processed"] < total_pages_requested:
+                early_stops = 1  # Đã dừng sớm ít nhất một lần
+                self.stats["early_stops"] = early_stops
+                self.stats["empty_pages"] = min(
+                    self.max_empty_pages,
+                    total_pages_requested - results["pages_processed"],
+                )
+                logger.info(
+                    f"Crawler stopped early: processed {results['pages_processed']}/{total_pages_requested} pages"
+                )
 
             logger.info(
                 f"API Crawler completed: {results['successful']} successful, {results['failed']} failed"
@@ -217,6 +267,17 @@ def main():
     parser.add_argument("--end-page", type=int, help="End page number")
     parser.add_argument("--region", help="Region ID for filtering")
     parser.add_argument("--category", help="Category ID for filtering")
+    parser.add_argument(
+        "--stop-on-empty",
+        type=str,
+        choices=["true", "false"],
+        help="Whether to stop crawling when empty pages are encountered",
+    )
+    parser.add_argument(
+        "--max-empty-pages",
+        type=int,
+        help="Maximum consecutive empty pages before stopping",
+    )
 
     args = parser.parse_args()
 
@@ -233,6 +294,10 @@ def main():
         os.environ["CATEGORY"] = args.category
     if args.interval:
         os.environ["INTERVAL"] = str(args.interval)
+    if args.stop_on_empty:
+        os.environ["STOP_ON_EMPTY"] = args.stop_on_empty
+    if args.max_empty_pages:
+        os.environ["MAX_EMPTY_PAGES"] = str(args.max_empty_pages)
 
     service = ApiCrawlerService()
 

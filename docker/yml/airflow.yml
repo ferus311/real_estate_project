@@ -15,7 +15,12 @@ x-airflow-common: &airflow-common
         - ../../crawler:/opt/airflow/crawler
         - ../../data_processing:/opt/airflow/data_processing
         - /var/run/docker.sock:/var/run/docker.sock
-    user: '${AIRFLOW_UID}:0'
+    user: '0:0'
+    networks:
+        - kafka_network
+        - hdfs_network
+        - airflow_network
+
 
 services:
     postgres:
@@ -28,6 +33,8 @@ services:
             POSTGRES_DB: airflow
         volumes:
             - airflow_postgres_data:/var/lib/postgresql/data
+        networks:
+            - airflow_network
 
     airflow-init:
         <<: *airflow-common
@@ -70,3 +77,12 @@ services:
 
 volumes:
     airflow_postgres_data:
+networks:
+    kafka_network:
+        external: true
+    hdfs_network:
+        external: true
+    airflow_network:
+        # driver: bridge
+        name: airflow_network
+

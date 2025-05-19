@@ -70,10 +70,9 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 
 # Make the entrypoint script executable
-RUN chmod +x /app/entrypoint.sh
+# RUN chmod +x /app/entrypoint.sh
 
 # Set the entrypoint
-ENTRYPOINT ["/app/entrypoint.sh"]
-
+# ENTRYPOINT ["/app/entrypoint.sh"]
 # Default command (can be overridden from docker compose)
 # CMD ["list_crawler", "run"]

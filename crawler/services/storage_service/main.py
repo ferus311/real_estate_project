@@ -5,6 +5,7 @@ import signal
 import logging
 import json
 import argparse
+import socket
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import pandas as pd
@@ -41,9 +42,17 @@ class StorageService(BaseService):
         self.topic = os.environ.get("KAFKA_TOPIC", "property-data")
         self.group_id = os.environ.get("KAFKA_GROUP_ID", "storage-service-group")
         self.file_prefix = os.environ.get("FILE_PREFIX", "property_data")
-        self.file_format = os.environ.get("FILE_FORMAT", "parquet")  # parquet, csv, json
+        self.file_format = os.environ.get(
+            "FILE_FORMAT", "parquet"
+        )  # parquet, csv, json
         self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "2"))
         self.max_file_size_mb = int(os.environ.get("MAX_FILE_SIZE_MB", "128"))
+        self.max_retries = int(os.environ.get("MAX_RETRIES", "3"))
+        self.retry_delay = int(os.environ.get("RETRY_DELAY", "1"))  # Giây
+        self.process_backup_on_startup = (
+            os.environ.get("PROCESS_BACKUP_ON_STARTUP", "true").lower() == "true"
+        )
+        self.backup_dir = os.environ.get("BACKUP_DIR", "backup_data")
 
         # Khởi tạo Kafka consumer
         self.consumer = KafkaConsumer([self.topic], group_id=self.group_id)
@@ -57,6 +66,10 @@ class StorageService(BaseService):
         self.last_flush_time = (
             {}
         )  # Dict để theo dõi thời gian flush cuối cùng của mỗi nguồn
+
+        # Đảm bảo thư mục backup tồn tại
+        if not os.path.exists(self.backup_dir):
+            os.makedirs(self.backup_dir)
 
         logger.info(f"Storage Service initialized with {self.storage_type} storage")
         logger.info(
@@ -93,12 +106,90 @@ class StorageService(BaseService):
             or estimated_size_mb >= self.max_file_size_mb
         )
 
-    def flush_buffer(self, source: str) -> bool:
+    def _save_to_backup(self, source: str, data: List[Dict[str, Any]]) -> bool:
+        """
+        Lưu dữ liệu vào file backup để xử lý lại sau
+
+        Args:
+            source: Nguồn dữ liệu
+            data: Dữ liệu cần lưu
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            if not os.path.exists(self.backup_dir):
+                os.makedirs(self.backup_dir)
+
+            # Tạo tên file backup với timestamp để tránh trùng lặp
+            hostname = socket.gethostname()
+            now = datetime.now()
+            timestamp = now.strftime("%Y%m%d_%H%M%S")
+            backup_file = f"{self.backup_dir}/{source}_{timestamp}_{hostname}.json"
+
+            with open(backup_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+
+            logger.info(
+                f"Đã lưu {len(data)} bản ghi từ nguồn {source} vào file backup: {backup_file}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu backup cho nguồn {source}: {e}")
+            return False
+
+    def _process_backup_files(self):
+        """Xử lý các file backup từ lần chạy trước"""
+        if not os.path.exists(self.backup_dir):
+            logger.info("Không có thư mục backup để xử lý")
+            return
+
+        backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith(".json")]
+        if not backup_files:
+            logger.info("Không tìm thấy file backup nào")
+            return
+
+        logger.info(f"Tìm thấy {len(backup_files)} file backup cần xử lý")
+
+        for file in backup_files:
+            try:
+                file_path = os.path.join(self.backup_dir, file)
+                # Xác định nguồn từ tên file (phần đầu tiên trước dấu _)
+                source = file.split("_")[0]
+
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                logger.info(f"Đang xử lý file backup: {file} với {len(data)} bản ghi")
+
+                # Thêm dữ liệu vào buffer hiện tại
+                if source not in self.data_buffers:
+                    self.data_buffers[source] = []
+                    self.buffer_sizes[source] = 0
+                    self.last_flush_time[source] = time.time()
+
+                self.data_buffers[source].extend(data)
+                self.buffer_sizes[source] = len(self.data_buffers[source])
+
+                # Flush buffer ngay lập tức
+                if self.flush_buffer(source):
+                    # Xóa file backup nếu lưu thành công
+                    os.remove(file_path)
+                    logger.info(f"File backup {file} đã được xử lý và xóa")
+                else:
+                    logger.warning(
+                        f"Không thể xử lý file backup {file}, sẽ thử lại sau"
+                    )
+            except Exception as e:
+                logger.error(f"Lỗi khi xử lý file backup {file}: {e}")
+
+    def flush_buffer(self, source: str, retry_count=0) -> bool:
         """
         Flush buffer của một nguồn cụ thể vào storage
 
         Args:
             source: Tên nguồn dữ liệu
+            retry_count: Số lần đã thử lại (mặc định: 0)
 
         Returns:
             bool: True nếu thành công, False nếu thất bại
@@ -115,7 +206,12 @@ class StorageService(BaseService):
             now = datetime.now()
             date_str = now.strftime("%Y_%m_%d")
             time_str = now.strftime("%H%M%S")
-            file_name = f"{self.file_prefix}_{date_str}_{time_str}.{self.file_format}"
+
+            # Thêm hostname vào tên file để tránh xung đột khi nhiều service cùng chạy
+            hostname = socket.gethostname()
+            hostname_short = hostname.split(".")[0]  # Lấy phần đầu tiên của hostname
+
+            file_name = f"{self.file_prefix}_{date_str}_{time_str}_{hostname_short}.{self.file_format}"
 
             # Tạo đường dẫn đầy đủ
             full_path = os.path.join(relative_path, file_name)
@@ -134,16 +230,47 @@ class StorageService(BaseService):
                 self.data_buffers[source] = []  # Xóa buffer sau khi lưu
                 self.buffer_sizes[source] = 0
                 self.last_flush_time[source] = time.time()
+
+                # Commit offset chỉ khi lưu thành công
+                self.consumer.commit()
                 return True
             else:
-                logger.error(f"Failed to save data from source {source}")
-                self.update_stats("failed", len(buffer))
-                return False
+                # Thử lại nếu chưa đạt số lần thử tối đa
+                if retry_count < self.max_retries:
+                    retry_count += 1
+                    retry_delay = self.retry_delay * retry_count  # Backoff tăng dần
+                    logger.warning(
+                        f"Lưu dữ liệu thất bại, đang thử lại lần {retry_count}/{self.max_retries} sau {retry_delay} giây..."
+                    )
+                    time.sleep(retry_delay)
+                    return self.flush_buffer(source, retry_count)
+                else:
+                    # Lưu vào backup nếu đã thử hết số lần
+                    logger.error(
+                        f"Failed to save data from source {source} after {self.max_retries} attempts"
+                    )
+                    self._save_to_backup(source, buffer)
+                    self.update_stats("failed", len(buffer))
+                    return False
 
         except Exception as e:
-            logger.error(f"Error flushing buffer for source {source}: {e}")
-            self.update_stats("failed", len(buffer))
-            return False
+            # Thử lại trong trường hợp lỗi nếu chưa đạt số lần thử tối đa
+            if retry_count < self.max_retries:
+                retry_count += 1
+                retry_delay = self.retry_delay * retry_count
+                logger.warning(
+                    f"Error flushing buffer for source {source}: {e}. Retrying ({retry_count}/{self.max_retries}) after {retry_delay}s..."
+                )
+                time.sleep(retry_delay)
+                return self.flush_buffer(source, retry_count)
+            else:
+                # Lưu vào backup nếu đã thử hết số lần
+                logger.error(
+                    f"Error flushing buffer for source {source} after {self.max_retries} attempts: {e}"
+                )
+                self._save_to_backup(source, buffer)
+                self.update_stats("failed", len(buffer))
+                return False
 
     def process_message(self, message: Dict[str, Any]) -> bool:
         """
@@ -194,6 +321,10 @@ class StorageService(BaseService):
         """
         logger.info(f"Storage Service started with {self.storage_type} storage")
 
+        # Xử lý các file backup trước khi bắt đầu tiêu thụ dữ liệu mới
+        if self.process_backup_on_startup:
+            self._process_backup_files()
+
         try:
             while self.running:
                 # Consume message từ Kafka
@@ -218,7 +349,12 @@ class StorageService(BaseService):
             # Flush tất cả các buffer trước khi thoát
             for source in list(self.data_buffers.keys()):
                 if self.data_buffers[source]:
-                    self.flush_buffer(source)
+                    # Nếu flush không thành công, lưu vào backup
+                    if not self.flush_buffer(source):
+                        self._save_to_backup(source, self.data_buffers[source])
+                        logger.info(
+                            f"Đã lưu dữ liệu của nguồn {source} vào backup trước khi thoát"
+                        )
 
             self.consumer.close()
             self.report_stats()
@@ -236,6 +372,20 @@ def main():
     )
     parser.add_argument("--min-file-size", type=int, help="Minimum file size in MB")
     parser.add_argument("--max-file-size", type=int, help="Maximum file size in MB")
+    parser.add_argument(
+        "--max-retries", type=int, help="Maximum retry attempts when saving fails"
+    )
+    parser.add_argument(
+        "--retry-delay", type=int, help="Base delay between retries in seconds"
+    )
+    parser.add_argument(
+        "--process-backup",
+        type=str,
+        help="Process backup files on startup (true/false)",
+    )
+    parser.add_argument(
+        "--backup-dir", type=str, help="Directory to store backup files"
+    )
 
     args = parser.parse_args()
 
@@ -254,6 +404,14 @@ def main():
         os.environ["MIN_FILE_SIZE_MB"] = str(args.min_file_size)
     if args.max_file_size:
         os.environ["MAX_FILE_SIZE_MB"] = str(args.max_file_size)
+    if args.max_retries:
+        os.environ["MAX_RETRIES"] = str(args.max_retries)
+    if args.retry_delay:
+        os.environ["RETRY_DELAY"] = str(args.retry_delay)
+    if args.process_backup:
+        os.environ["PROCESS_BACKUP_ON_STARTUP"] = args.process_backup
+    if args.backup_dir:
+        os.environ["BACKUP_DIR"] = args.backup_dir
 
     service = StorageService()
     service.run()

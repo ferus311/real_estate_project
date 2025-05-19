@@ -1,40 +1,18 @@
-# Thư viện cơ bản
-pandas>=1.5.3
-numpy>=1.24.3
-requests>=2.31.0
-beautifulsoup4>=4.12.2
-lxml>=4.9.3
-python-dotenv>=1.0.0
+pandas
+numpy
 
-# Thư viện Kafka
-kafka-python>=2.0.2
+pyarrow
+hdfs
+pyhdfs
 
-# Thư viện lưu trữ
-pyarrow>=14.0.0
-hdfs>=2.7.0
-pyhdfs>=0.3.1
-fsspec>=2023.9.2
-
-# Thư viện xử lý dữ liệu
-fastparquet>=2023.8.0
-
-# Thư viện phân tích HTML
-selectolax>=0.3.17
-
-# Thư viện bất đồng bộ
-aiohttp>=3.8.6
-asyncio>=3.4.3
-
-# Thư viện logging
-loguru>=0.7.2
-
-# Thư viện tiện ích
-tqdm>=4.66.1
-python-dateutil>=2.8.2
+kafka-python
+confluent-kafka
 
 # selnium
 # webdriver-manager
 playwright
+beautifulsoup4
+requests
 # scrapy
+aiohttp
 dotenv
-

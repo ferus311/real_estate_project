@@ -48,6 +48,17 @@ class DetailCrawlerService(BaseService):
         self.batch_queue = asyncio.Queue()
         self.semaphore = asyncio.Semaphore(self.max_concurrent)
 
+        # Tracking để commit offset
+        self.processed_urls_count = 0
+        self.commit_threshold = int(
+            os.environ.get("COMMIT_THRESHOLD", "20")
+        )  # Số URL xử lý trước khi commit
+        self.last_commit_time = time.time()
+        self.commit_interval = int(
+            os.environ.get("COMMIT_INTERVAL", "60")
+        )  # Thời gian giữa các lần commit (giây)
+        self.commit_lock = asyncio.Lock()  # Lock để đảm bảo không commit đồng thời
+
         # Monitoring data
         self.stats = {
             "processed": 0,
@@ -55,6 +66,7 @@ class DetailCrawlerService(BaseService):
             "failed": 0,
             "retries": 0,
             "start_time": time.time(),
+            "commits": 0,  # Thêm thống kê số lần commit
         }
         self.failed_urls = defaultdict(int)
 
@@ -91,6 +103,8 @@ class DetailCrawlerService(BaseService):
         logger.info(f"Successful: {self.stats['successful']} URLs")
         logger.info(f"Failed: {self.stats['failed']} URLs")
         logger.info(f"Retries: {self.stats['retries']}")
+        logger.info(f"Kafka Commits: {self.stats['commits']}")
+        logger.info(f"Pending URLs since last commit: {self.processed_urls_count}")
 
         if self.stats["processed"] > 0:
             rate = self.stats["processed"] / runtime
@@ -102,6 +116,25 @@ class DetailCrawlerService(BaseService):
         """Cập nhật thống kê"""
         if stat_key in self.stats:
             self.stats[stat_key] += 1
+
+    async def commit_offset_safely(self):
+        """
+        Commit offset một cách an toàn, sử dụng lock để tránh commit đồng thời từ nhiều worker
+        """
+        async with self.commit_lock:
+            try:
+                success = self.consumer.commit()
+                if success:
+                    self.stats["commits"] += 1
+                    self.processed_urls_count = 0
+                    self.last_commit_time = time.time()
+                    logger.info(f"[Kafka] Successfully committed offset")
+                else:
+                    logger.warning(f"[Kafka] Failed to commit offset")
+                return success
+            except Exception as e:
+                logger.error(f"[Kafka] Error committing offset: {e}")
+                return False
 
     async def kafka_callback(self, result):
         """Send crawled data to Kafka"""
@@ -137,6 +170,10 @@ class DetailCrawlerService(BaseService):
             if success:
                 logger.info(f"[Kafka] Sent data for: {result.get('url', 'unknown')}")
                 self.update_stats("successful")
+
+                # Tăng số lượng URL đã xử lý thành công
+                self.processed_urls_count += 1
+
                 return True
             else:
                 logger.error(
@@ -156,25 +193,40 @@ class DetailCrawlerService(BaseService):
         batch = []
 
         while self.running:
-            # Nếu url_queue đầy, đợi và không tiêu thụ Kafka
-            if self.url_queue.full():
-                logger.warning("[Kafka] URL queue is full. Pausing consumption...")
+            try:
+                # Nếu url_queue đầy, đợi và không tiêu thụ Kafka
+                if self.url_queue.full():
+                    logger.warning("[Kafka] URL queue is full. Pausing consumption...")
+                    await asyncio.sleep(1.0)
+                    continue
+
+                message = self.consumer.consume(timeout=1.0)
+                if message and "url" in message:
+                    batch.append(message)
+
+                    # Khi đủ batch hoặc gần đầy, gửi qua batch queue
+                    if len(batch) >= self.batch_size:
+                        await self.batch_queue.put(batch.copy())
+                        batch.clear()
+                else:
+                    if batch:
+                        await self.batch_queue.put(batch.copy())
+                        batch.clear()
+
+                    # Kiểm tra nếu đã đủ thời gian từ lần commit trước đó
+                    current_time = time.time()
+                    if (
+                        current_time - self.last_commit_time
+                    ) >= self.commit_interval and self.processed_urls_count > 0:
+                        logger.info(
+                            f"[Kafka] Committing offset due to time interval ({self.commit_interval}s)"
+                        )
+                        await self.commit_offset_safely()
+
+                    await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"[Kafka Consumer] Error: {e}")
                 await asyncio.sleep(1.0)
-                continue
-
-            message = self.consumer.consume(timeout=1.0)
-            if message and "url" in message:
-                batch.append(message)
-
-                # Khi đủ batch hoặc gần đầy, gửi qua batch queue
-                if len(batch) >= self.batch_size:
-                    await self.batch_queue.put(batch.copy())
-                    batch.clear()
-            else:
-                if batch:
-                    await self.batch_queue.put(batch.copy())
-                    batch.clear()
-                await asyncio.sleep(0.05)
 
         if batch:
             await self.batch_queue.put(batch)
@@ -230,7 +282,25 @@ class DetailCrawlerService(BaseService):
                         else:
                             # Thêm metadata và gửi đến Kafka
                             detail_data.update(metadata)
-                            await self.kafka_callback(detail_data)
+                            success = await self.kafka_callback(detail_data)
+
+                            # Kiểm tra điều kiện để commit offset
+                            current_time = time.time()
+                            should_commit_by_count = (
+                                self.processed_urls_count >= self.commit_threshold
+                            )
+                            should_commit_by_time = (
+                                current_time - self.last_commit_time
+                            ) >= self.commit_interval
+
+                            if success and (
+                                should_commit_by_count or should_commit_by_time
+                            ):
+                                logger.debug(
+                                    f"[Worker {worker_id}] Committing offset after {self.processed_urls_count} URLs processed"
+                                )
+                                await self.commit_offset_safely()
+
                     else:
                         retry_count = self.failed_urls[url] + 1
                         self.failed_urls[url] = retry_count
@@ -296,6 +366,13 @@ class DetailCrawlerService(BaseService):
         except Exception as e:
             logger.error(f"Fatal error: {e}")
         finally:
+            # Thử commit offset một lần cuối trước khi đóng consumer
+            try:
+                self.consumer.commit()
+                logger.info("Final offset committed before shutdown")
+            except Exception as e:
+                logger.error(f"Error during final commit: {e}")
+
             self.consumer.close()
             self.report_stats()
             logger.info("Service stopped")

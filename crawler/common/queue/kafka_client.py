@@ -46,16 +46,29 @@ class KafkaProducer:
 class KafkaConsumer:
     def __init__(self, topics, group_id, bootstrap_servers=None):
         if bootstrap_servers is None:
-            bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka1:19092")
+            bootstrap_servers = os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS", "kafka1:19092"
+            )
 
-        self.consumer = Consumer({
-            'bootstrap.servers': bootstrap_servers,
-            'group.id': group_id,
-            'auto.offset.reset': 'earliest',
-            'enable.auto.commit': True
-        })
+        self.consumer = Consumer(
+            {
+                "bootstrap.servers": bootstrap_servers,
+                "group.id": group_id,
+                "auto.offset.reset": "earliest",
+                "enable.auto.commit": False,
+            }
+        )
         self.consumer.subscribe(topics)
         logger.info(f"Kafka Consumer subscribed to topics: {topics}")
+
+    def commit(self):
+        """Commit offset thủ công"""
+        try:
+            self.consumer.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error committing offsets: {e}")
+            return False
 
     def consume(self, timeout=1.0):
         """Tiêu thụ message từ Kafka"""
@@ -67,14 +80,14 @@ class KafkaConsumer:
 
             if msg.error():
                 if msg.error().code() == KafkaError._PARTITION_EOF:
-                    logger.debug('Reached end of partition')
+                    logger.debug("Reached end of partition")
                 else:
-                    logger.error(f'Error while consuming: {msg.error()}')
+                    logger.error(f"Error while consuming: {msg.error()}")
                 return None
 
             # Decode giá trị message
             try:
-                value = msg.value().decode('utf-8')
+                value = msg.value().decode("utf-8")
                 return json.loads(value)
             except json.JSONDecodeError:
                 return value

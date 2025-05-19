@@ -364,24 +364,70 @@ class ChototApiCrawler(BaseApiCrawler):
         Returns:
             Dict: Dữ liệu item, hoặc None nếu có lỗi
         """
+        error_type = None
         try:
-            api_url = await self.get_api_url(identifier)
+            # Validate identifier trước khi xử lý
+            if not identifier:
+                logger.error(f"Invalid identifier: empty value")
+                error_type = "invalid_identifier"
+                return None
+
+            try:
+                api_url = await self.get_api_url(identifier)
+            except (ValueError, AttributeError) as e:
+                logger.error(f"Failed to construct API URL for {identifier}: {e}")
+                error_type = "invalid_url_format"
+                return None
 
             async with aiohttp.ClientSession() as session:
                 response_data = await self.fetch_api(session, api_url)
 
-                if response_data:
-                    result = await self.parse_response(response_data, identifier)
-                    result.update(
-                        {
-                            "source": self.source,
-                            "crawl_timestamp": datetime.now().isoformat(),
-                            "identifier": str(identifier),
-                        }
-                    )
-                    return result
+                if not response_data:
+                    logger.warning(f"No data returned for identifier: {identifier}")
+                    error_type = "empty_response"
+                    return None
 
-            return None
+                if "ads" not in response_data or not response_data["ads"]:
+                    logger.warning(
+                        f"No ads data in response for identifier: {identifier}"
+                    )
+                    error_type = "missing_content"
+                    # Return empty result with status instead of None for better tracking
+                    return {
+                        "source": self.source,
+                        "crawl_timestamp": datetime.now().isoformat(),
+                        "identifier": str(identifier),
+                        "status": "no_content",
+                        "skipped": True,
+                    }
+
+                result = await self.parse_response(response_data, identifier)
+                result.update(
+                    {
+                        "source": self.source,
+                        "crawl_timestamp": datetime.now().isoformat(),
+                        "identifier": str(identifier),
+                        "status": "success",
+                    }
+                )
+                return result
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error when crawling {identifier}: {e}")
+            error_type = "network_error"
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON response for {identifier}: {e}")
+            error_type = "invalid_response"
         except Exception as e:
-            logger.error(f"Error crawling {identifier}: {e}")
-            return None
+            logger.error(f"Unexpected error crawling {identifier}: {e}")
+            error_type = "unknown_error"
+
+        # Return status information for better tracking
+        return {
+            "source": self.source,
+            "crawl_timestamp": datetime.now().isoformat(),
+            "identifier": str(identifier),
+            "status": "error",
+            "error_type": error_type,
+            "skipped": True,
+        }
