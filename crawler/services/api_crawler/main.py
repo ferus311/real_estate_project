@@ -32,7 +32,6 @@ class ApiCrawlerService(BaseService):
         self.max_concurrent = int(os.environ.get("MAX_CONCURRENT", "5"))
         self.start_page = int(os.environ.get("START_PAGE", "1"))
         self.end_page = int(os.environ.get("END_PAGE", "5"))
-        self.category = os.environ.get("CHOTOT_CATEGORY", "1000")  # Mặc định: BĐS
         self.region = os.environ.get("REGION", None)
         self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
         self.interval = int(os.environ.get("INTERVAL", "3600"))  # Mặc định: 1 giờ
@@ -131,6 +130,14 @@ class ApiCrawlerService(BaseService):
         while retry_count < max_retries:
             try:
                 # Gửi dữ liệu tới Kafka
+                metadata = {
+                    "source": self.source,
+                    "url": result.get("url", ""),
+                    "crawl_timestamp": int(datetime.now().timestamp()),
+                }
+
+                result.update(metadata)
+
                 success = self.producer.send(self.output_topic, result)
 
                 if success:
@@ -180,7 +187,6 @@ class ApiCrawlerService(BaseService):
                 start_page=self.start_page,
                 end_page=self.end_page,
                 region=self.region,
-                category=self.category,
                 callback=self.kafka_callback,
                 stop_on_empty=self.stop_on_empty,
                 max_empty_pages=self.max_empty_pages,
@@ -266,7 +272,6 @@ def main():
     parser.add_argument("--start-page", type=int, help="Start page number")
     parser.add_argument("--end-page", type=int, help="End page number")
     parser.add_argument("--region", help="Region ID for filtering")
-    parser.add_argument("--category", help="Category ID for filtering")
     parser.add_argument(
         "--stop-on-empty",
         type=str,
@@ -290,8 +295,6 @@ def main():
         os.environ["END_PAGE"] = str(args.end_page)
     if args.region:
         os.environ["REGION"] = args.region
-    if args.category:
-        os.environ["CATEGORY"] = args.category
     if args.interval:
         os.environ["INTERVAL"] = str(args.interval)
     if args.stop_on_empty:

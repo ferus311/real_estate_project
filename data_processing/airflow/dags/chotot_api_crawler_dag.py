@@ -12,12 +12,12 @@ default_args = {
 }
 
 dag = DAG(
-    "chotot_api_crawler_test",
+    "chotot_api_crawler",
     default_args=default_args,
-    description="DAG để test crawler API Chotot",
+    description="DAG crawler API Chotot",
     schedule_interval=None,
     start_date=days_ago(1),
-    tags=["crawler", "chotot", "test"],
+    tags=["crawler", "chotot", "api"],
 )
 
 check_kafka = BashOperator(
@@ -36,15 +36,15 @@ run_crawler = DockerOperator(
     image="crawler-api:latest",
     command="python -m services.api_crawler.main --once",
     auto_remove=True,
-    network_mode="kafka_network",  # ✅ Sửa chỗ này
+    network_mode="hdfs_network",
     environment={
         "SOURCE": "chotot",
         "START_PAGE": "1",
         "END_PAGE": "3",
-        "OUTPUT_TOPIC": "property-urls-test",
+        "OUTPUT_TOPIC": "property-data",
         "MAX_CONCURRENT": "5",
         "STOP_ON_EMPTY": "true",
-        "MAX_EMPTY_PAGES": "2",
+        "MAX_EMPTY_PAGES": "5",
         "KAFKA_BOOTSTRAP_SERVERS": "kafka1:19092",
         "HDFS_NAMENODE": "namenode:9000",
     },

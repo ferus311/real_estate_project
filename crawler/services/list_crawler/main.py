@@ -17,7 +17,7 @@ sys.path.append(
 from common.queue.kafka_client import KafkaProducer
 from common.utils.logging_utils import setup_logging
 from common.base.base_service import BaseService
-from common.base.base_crawler import BaseCrawler
+from common.base.base_list_crawler import BaseListCrawler
 from common.factory.crawler_factory import CrawlerFactory
 from common.utils.checkpoint import save_checkpoint_with_timestamp, should_force_crawl
 
@@ -35,6 +35,14 @@ class ListCrawlerService(BaseService):
         self.start_page = int(os.environ.get("START_PAGE", "1"))
         self.end_page = int(os.environ.get("END_PAGE", "500"))
         self.output_file = os.environ.get("OUTPUT_FILE", None)
+
+        # Định nghĩa checkpoint_file để theo dõi tiến trình
+        checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "./checkpoint")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        self.checkpoint_file = os.path.join(
+            checkpoint_dir, f"{self.source}_list_checkpoint.json"
+        )
+
         # Force crawl options
         self.force_crawl = os.environ.get("FORCE_CRAWL", "false").lower() == "true"
         self.force_crawl_interval = float(
@@ -48,7 +56,7 @@ class ListCrawlerService(BaseService):
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
 
-    def get_crawler(self) -> BaseCrawler:
+    def get_crawler(self) -> BaseListCrawler:
         """Lấy crawler instance dựa trên cấu hình"""
         try:
             return CrawlerFactory.create_list_crawler(
@@ -78,7 +86,7 @@ class ListCrawlerService(BaseService):
                     "url": url,
                     "source": self.source,
                     "timestamp": datetime.now().isoformat(),
-                    "page": page_number,
+                    # "page": page_number,
                 }
                 if self.output_file:
                     self.collected_data.append(message)

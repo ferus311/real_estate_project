@@ -10,10 +10,10 @@ Hệ thống bao gồm các thành phần chính sau:
 
 Thu thập dữ liệu từ các nguồn khác nhau:
 
--   **BaseCrawler**: Interface cho crawler danh sách
+-   **BaseListCrawler**: Interface cho crawler danh sách
 -   **BaseDetailCrawler**: Interface cho crawler chi tiết
 -   **BaseApiCrawler**: Interface cho crawler API
--   **BatdongsanCrawler**: Crawler danh sách Batdongsan
+-   **BatdongsanListCrawler**: Crawler danh sách Batdongsan
 -   **BatdongsanDetailCrawler**: Crawler chi tiết Batdongsan
 -   **ChototApiCrawler**: Crawler API cho Chotot
 

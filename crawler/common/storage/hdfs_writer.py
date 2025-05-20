@@ -38,6 +38,7 @@ class HDFSWriter:
         )
 
         # Khởi tạo kết nối HDFS
+        # Sử dụng thông số cơ bản để tránh version mismatch
         self.client = InsecureClient(f"http://{self.namenode}", user=self.user)
         logger.info(f"Initialized HDFS connection to {self.namenode}")
 
@@ -51,12 +52,69 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # If path is empty or just '/', return True as it should already exist
+        if not path or path == "/":
+            return True
+
         try:
+            # Check if the directory exists first
+            try:
+                status = self.client.status(path, strict=False)
+                if status is not None:
+                    logger.info(f"Directory already exists: {path}")
+                    return True
+            except:
+                pass
+
+            # Try to create the directory
+            logger.info(f"Creating directory on HDFS: {path}")
             self.client.makedirs(path)
+            logger.info(f"Successfully created directory: {path}")
             return True
         except Exception as e:
             logger.error(f"Error creating directory {path}: {e}")
+            # Try to create parent directories recursively if needed
+            try:
+                parent_dir = os.path.dirname(path)
+                if parent_dir and parent_dir != path:
+                    if self.ensure_directory_exists(parent_dir):
+                        self.client.makedirs(path)
+                        logger.info(
+                            f"Successfully created directory after creating parents: {path}"
+                        )
+                        return True
+            except Exception as nested_e:
+                logger.error(
+                    f"Failed to create parent directories for {path}: {nested_e}"
+                )
             return False
+
+    def _convert_dataframe_to_string_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Chuyển đổi tất cả các cột của DataFrame sang kiểu string để tránh lỗi chuyển đổi kiểu
+
+        Args:
+            df: DataFrame cần chuyển đổi
+
+        Returns:
+            pd.DataFrame: DataFrame đã chuyển đổi
+        """
+        try:
+            # First, replace NaN values with empty strings to avoid conversion errors
+            df = df.fillna("")
+            # Convert all columns to string type
+            for col in df.columns:
+                df[col] = df[col].astype(str)
+
+            logger.info(
+                f"Converted all columns to string type for DataFrame with {len(df)} rows"
+            )
+            return df
+        except Exception as e:
+            logger.warning(
+                f"Error during data type conversion: {e}, attempting to continue anyway"
+            )
+            return df
 
     def write_dataframe_to_parquet(self, df: pd.DataFrame, hdfs_path: str) -> bool:
         """
@@ -69,6 +127,9 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
+
         # Đảm bảo thư mục cha tồn tại
         parent_dir = os.path.dirname(hdfs_path)
         self.ensure_directory_exists(parent_dir)
@@ -107,6 +168,9 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
+
         # Đảm bảo thư mục cha tồn tại
         parent_dir = os.path.dirname(hdfs_path)
         self.ensure_directory_exists(parent_dir)
@@ -146,6 +210,9 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
+
         # Đảm bảo thư mục cha tồn tại
         parent_dir = os.path.dirname(hdfs_path)
         self.ensure_directory_exists(parent_dir)
@@ -332,6 +399,8 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
         try:
             # Kiểm tra file tồn tại
             file_exists = self.client.status(hdfs_path, strict=False) is not None
@@ -369,6 +438,8 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
         try:
             # Kiểm tra file tồn tại
             file_exists = self.client.status(hdfs_path, strict=False) is not None
@@ -406,6 +477,8 @@ class HDFSWriter:
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
+        # Chuyển đổi tất cả các cột sang kiểu string
+        df = self._convert_dataframe_to_string_types(df)
         try:
             # Kiểm tra file tồn tại
             file_exists = self.client.status(hdfs_path, strict=False) is not None

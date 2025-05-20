@@ -1,0 +1,31 @@
+dữ liệu khi thu thập từ batdongsan.com
+
+
+{
+	"title": "Bán gấp nhà Mỗ Lao HĐ,ngõ thông,7 chỗ vào nhà",
+	"description": "Chị gái em kinh doanh phát nên chuyển ra nhà mặt phố,cần bán gấp căn nhà ở Mỗ Lao Hà Đông,ngõ thông với khu dịch vụ Mỗ Lao,ô tô 7 chỗ vào nhà,gần Cc Xuân Mai,BigC Hồ Gươm,làng Việt kiều châu Âu..tiện ích vô vàn Nhà thiết kế 5 tầng,cầu thang cuối,8pn đang cho bên thứ 3 vận hành,doanh thu 300/năm Ace mua về chỉ việc đến ở luôn,hoặc đầu tư giữ tiền,kinh doanh dòng tiền như hiện tại Qt ace gọi ngay em Phú để em Phú được hỗ trợ *** nhé",
+	"price": "9,25 tỷ",
+	"area": "36",
+	"price_per_m2": "256.94446",
+	"bedroom": "8",
+	"bathroom": "5",
+	"legal_status": 1,
+	"latitude": "20.980589",
+	"longitude": "105.77907",
+	"location": "Đường Thanh Bình, Phường Mộ Lao, Quận Hà Đông, Hà Nội",
+	"house_direction": "",
+	"floor_count": "5",
+	"interior": "",
+
+
+
+    
+	"seller_info": {
+		"name": "Phú Lê",
+		"account_id": "27023096"
+	},
+	"source": "chotot",
+	"posted_date": 1747734160,
+	"url": "https://gateway.chotot.com/v1/public/ad-listing/125116483",
+	"crawl_timestamp": 1747735645
+}

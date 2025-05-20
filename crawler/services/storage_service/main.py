@@ -54,6 +54,14 @@ class StorageService(BaseService):
         )
         self.backup_dir = os.environ.get("BACKUP_DIR", "backup_data")
 
+        # Cấu hình cho chế độ auto-stop (dừng tự động sau thời gian không hoạt động)
+        # Khi bật run_once_mode, service sẽ tự động dừng sau idle_timeout giây không có message mới
+        self.run_once_mode = os.environ.get("RUN_ONCE_MODE", "false").lower() == "true"
+        # Thời gian chờ tối đa không có message trước khi dừng (mặc định: 1 giờ)
+        self.idle_timeout = int(os.environ.get("IDLE_TIMEOUT", "3600"))
+        # Theo dõi thời gian nhận message cuối cùng để phát hiện thời gian không hoạt động
+        self.last_message_time = time.time()
+
         # Khởi tạo Kafka consumer
         self.consumer = KafkaConsumer([self.topic], group_id=self.group_id)
 
@@ -76,6 +84,16 @@ class StorageService(BaseService):
             f"Batch size: {self.batch_size}, Flush interval: {self.flush_interval}s, "
             f"File format: {self.file_format}, Min size: {self.min_file_size_mb}MB, Max size: {self.max_file_size_mb}MB"
         )
+        if self.run_once_mode:
+            logger.info(
+                f"Running in ONCE mode: Will stop after {self.idle_timeout}s without messages"
+            )
+
+        # Set up signal handlers for graceful shutdown
+        self._setup_signal_handler()
+
+        # Set up signal handlers for graceful shutdown
+        self._setup_signal_handler()
 
     def should_flush(self, source: str) -> bool:
         """
@@ -297,6 +315,9 @@ class StorageService(BaseService):
             self.buffer_sizes[source] = len(self.data_buffers[source])
             self.update_stats("processed")
 
+            # Cập nhật thời gian nhận message
+            self.last_message_time = time.time()
+
             # Kiểm tra xem có nên flush không
             if self.should_flush(source):
                 return self.flush_buffer(source)
@@ -319,7 +340,12 @@ class StorageService(BaseService):
         """
         Chạy service
         """
-        logger.info(f"Storage Service started with {self.storage_type} storage")
+        if self.run_once_mode:
+            logger.info(
+                f"Storage Service started with {self.storage_type} storage in auto-stop mode (will stop after {self.idle_timeout} seconds without messages)"
+            )
+        else:
+            logger.info(f"Storage Service started with {self.storage_type} storage")
 
         # Xử lý các file backup trước khi bắt đầu tiêu thụ dữ liệu mới
         if self.process_backup_on_startup:
@@ -338,27 +364,111 @@ class StorageService(BaseService):
                         if self.should_flush(source) and self.data_buffers[source]:
                             self.flush_buffer(source)
 
+                    # Kiểm tra chế độ chạy một lần
+                    if self.run_once_mode:
+                        current_time = time.time()
+                        # Nếu đã quá thời gian idle_timeout mà không có message mới, dừng service
+                        if current_time - self.last_message_time > self.idle_timeout:
+                            logger.info(
+                                f"Auto-stop: No new messages received for {self.idle_timeout} seconds. Stopping service."
+                            )
+
+                            # Flush all remaining data before stopping
+                            self._flush_all_buffers()
+                            logger.info("All data buffers have been flushed.")
+
+                            self.running = False
+
                     # Sleep một chút để không tiêu tốn CPU
                     time.sleep(0.1)
 
         except KeyboardInterrupt:
-            logger.info("Received interrupt signal")
+            logger.info("Received keyboard interrupt, shutting down gracefully...")
+            self.running = False
         except Exception as e:
             logger.error(f"Error in Storage Service: {e}")
         finally:
-            # Flush tất cả các buffer trước khi thoát
-            for source in list(self.data_buffers.keys()):
-                if self.data_buffers[source]:
-                    # Nếu flush không thành công, lưu vào backup
-                    if not self.flush_buffer(source):
-                        self._save_to_backup(source, self.data_buffers[source])
-                        logger.info(
-                            f"Đã lưu dữ liệu của nguồn {source} vào backup trước khi thoát"
-                        )
+            # Flush all buffers before shutdown to ensure no data loss
+            logger.info("Shutting down service, ensuring all data is saved...")
+            self._flush_all_buffers()
 
             self.consumer.close()
             self.report_stats()
             logger.info("Storage Service stopped")
+
+    def _flush_all_buffers(self):
+        """
+        Flush all data buffers for all sources.
+        This is used during shutdown to ensure all data is saved.
+
+        Returns:
+            dict: Dictionary with source names as keys and boolean success status as values
+        """
+        results = {}
+        logger.info("Flushing all remaining data buffers before shutdown...")
+
+        # Get a list of all sources with data in their buffers
+        sources_to_flush = [
+            source for source, buffer in self.data_buffers.items() if buffer
+        ]
+
+        if not sources_to_flush:
+            logger.info("No data buffers to flush.")
+            return results
+
+        for source in sources_to_flush:
+            logger.info(
+                f"Flushing buffer for source '{source}' with {len(self.data_buffers[source])} records"
+            )
+            success = self.flush_buffer(source)
+            results[source] = success
+
+            if success:
+                logger.info(f"Successfully flushed buffer for source '{source}'")
+            else:
+                logger.warning(
+                    f"Failed to flush buffer for source '{source}', data saved to backup"
+                )
+
+        return results
+
+    def _setup_signal_handler(self):
+        """
+        Set up signal handlers for graceful shutdown
+        """
+
+        def signal_handler(sig, frame):
+            logger.info(f"Received signal {sig}, shutting down gracefully...")
+            self.running = False
+            # Signal handlers should return quickly, so we don't flush buffers here
+            # The main loop will handle flushing when self.running becomes False
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, signal_handler)  # Handle Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # Handle termination signal
+        logger.debug("Signal handlers registered for graceful shutdown")
+
+
+# filepath: /home/fer/data/real_estate_project/crawler/services/storage_service/main.py
+#
+# Storage Service: Lưu trữ dữ liệu bất động sản từ Kafka vào storage (HDFS hoặc local)
+#
+# Tính năng:
+# - Lưu dữ liệu vào HDFS hoặc local storage
+# - Buffer dữ liệu theo nguồn và định kỳ flush ra file
+# - Tự động chuyển đổi kiểu dữ liệu thành string để đảm bảo khả năng lưu trữ
+# - Backup dữ liệu khi flush thất bại để xử lý lại sau
+# - Tự động dừng sau thời gian không hoạt động (chế độ auto-stop)
+#   - Sử dụng cờ --once để kích hoạt chế độ dừng tự động
+#   - Sử dụng --idle-timeout để cài đặt thời gian chờ (mặc định 3600 giây)
+#
+# Chế độ auto-stop: Khi bật cờ --once, service sẽ tự động dừng sau khi không
+# nhận được message nào từ Kafka trong khoảng thời gian idle-timeout. Trước
+# khi dừng, service sẽ flush tất cả các buffer để đảm bảo dữ liệu được lưu đầy đủ.
+#
+# Ví dụ sử dụng:
+# python main.py --storage-type hdfs --once --idle-timeout 1800
+#
 
 
 def main():
@@ -386,6 +496,18 @@ def main():
     parser.add_argument(
         "--backup-dir", type=str, help="Directory to store backup files"
     )
+    # Auto-stop mode configuration
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Auto-stop mode: stop service after idle_timeout seconds without new messages",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=3600,
+        help="Time in seconds to wait without messages before stopping in auto-stop mode (default: 3600)",
+    )
 
     args = parser.parse_args()
 
@@ -412,6 +534,11 @@ def main():
         os.environ["PROCESS_BACKUP_ON_STARTUP"] = args.process_backup
     if args.backup_dir:
         os.environ["BACKUP_DIR"] = args.backup_dir
+    if args.once:
+        os.environ["RUN_ONCE_MODE"] = "true"
+    # Since idle_timeout has a default value, we need to explicitly check if it was provided
+    if args.idle_timeout != 3600 or "IDLE_TIMEOUT" not in os.environ:
+        os.environ["IDLE_TIMEOUT"] = str(args.idle_timeout)
 
     service = StorageService()
     service.run()

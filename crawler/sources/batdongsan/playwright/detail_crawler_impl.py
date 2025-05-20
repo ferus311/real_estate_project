@@ -53,28 +53,70 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
             browser = None
             try:
                 async with async_playwright() as playwright:
-                    browser = await playwright.chromium.launch(headless=True)
+                    # Thêm các tùy chọn để tăng độ ổn định khi chạy trong Docker/Airflow
+                    browser = await playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--disable-dev-shm-usage",  # Giải quyết vấn đề bộ nhớ của Docker
+                            "--no-sandbox",  # Cần thiết trong một số môi trường container
+                            "--disable-setuid-sandbox",
+                            "--disable-gpu",
+                            "--disable-software-rasterizer",
+                        ],
+                    )
                     context = await browser.new_context(
                         user_agent=random.choice(self.user_agents),
                         viewport={"width": 1280, "height": 720},
+                        ignore_https_errors=True,  # Bỏ qua lỗi SSL
                     )
 
-                    # Tối ưu performance bằng cách block các resource không cần thiết
-                    await context.route(
+                    # Thay vì block tất cả resource, tạo page trước rồi cấu hình trực tiếp trên page
+                    # để tránh route handler treo khi đóng context
+                    page = await context.new_page()
+
+                    # Đảm bảo kết nối online
+                    await page.context.set_offline(False)
+
+                    # Chỉ chặn các định dạng tài nguyên không cần thiết để cải thiện hiệu suất
+                    await page.route(
+                        "**/*.{png,jpg,jpeg,webp,svg,gif,css,woff,woff2,ttf,otf}",
+                        lambda route: route.abort(),
+                    )
+
+                    # Cho phép tất cả các request khác đi qua mà không cần options
+                    await page.route(
                         "**/*",
                         lambda route: (
-                            route.abort()
-                            if route.request.resource_type
+                            route.continue_()
+                            if not route.request.resource_type
                             in ["image", "stylesheet", "font"]
-                            else route.continue_()
+                            else route.abort()
                         ),
                     )
-
-                    page = await context.new_page()
                     print(f"[Batdongsan Detail] Crawling {url}")
 
-                    await page.goto(url, timeout=60000)
-                    await page.wait_for_load_state("networkidle")
+                    try:
+                        # Tăng timeout và thêm xử lý lỗi khi điều hướng
+                        response = await page.goto(
+                            url, timeout=90000, wait_until="domcontentloaded"
+                        )
+                        if response is None or not response.ok:
+                            print(
+                                f"[Batdongsan Detail] Failed to load page {url}: HTTP status {response.status if response else 'Unknown'}"
+                            )
+                            # Thử đợi thêm thời gian nếu trang đang tải
+                            await page.wait_for_timeout(5000)
+
+                        # Đợi thêm nội dung tải động với timeout ngắn hơn
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=20000)
+                        except Exception as e:
+                            print(
+                                f"[Batdongsan Detail] Timeout waiting for networkidle: {e}"
+                            )
+                    except Exception as e:
+                        print(f"[Batdongsan Detail] Error during page navigation: {e}")
+                        # Vẫn tiếp tục lấy nội dung nếu có
 
                     html = await page.content()
                     detail_info = extract_detail_info(html)
@@ -96,26 +138,28 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                         else detail_info
                     )
 
-                    # Thêm metadata
-                    detail_dict.update(
-                        {
-                            "crawl_timestamp": datetime.now().isoformat(),
-                            "source": self.source,
-                            "url": url,
-                        }
-                    )
-
                     return detail_dict
 
             except Exception as e:
                 print(f"[Batdongsan Detail] Error crawling {url}: {e}")
                 retries -= 1
-                await asyncio.sleep(self.get_random_delay(1, 3))
+                # Tăng thời gian chờ với mỗi lần thử lại
+                delay = self.get_random_delay(
+                    1 + (self.max_retries - retries), 3 + (self.max_retries - retries)
+                )
+                print(
+                    f"[Batdongsan Detail] Retrying in {delay:.2f} seconds ({retries} attempts left)"
+                )
+                await asyncio.sleep(delay)
 
             finally:
+                # Đảm bảo browser luôn được đóng để tránh rò rỉ tài nguyên
                 if browser:
                     try:
-                        await browser.close()
+                        # Sử dụng timeout để tránh treo khi đóng browser
+                        await asyncio.wait_for(browser.close(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        print(f"[Batdongsan Detail] Timeout when closing browser")
                     except Exception as e:
                         print(f"[Batdongsan Detail] Error closing browser: {e}")
 

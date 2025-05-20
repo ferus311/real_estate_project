@@ -11,6 +11,7 @@ services:
             ZOOKEEPER_SERVERS: zoo1:2888:3888
         networks:
             - kafka_network
+            - hdfs_network
 
     kafka1:
         image: confluentinc/cp-kafka:7.8.0
@@ -50,6 +51,7 @@ services:
             KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
         networks:
             - kafka_network
+            - hdfs_network
 
     # kafka2:
     #   image: confluentinc/cp-kafka:7.8.0

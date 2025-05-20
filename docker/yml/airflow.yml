@@ -17,7 +17,6 @@ x-airflow-common: &airflow-common
         - /var/run/docker.sock:/var/run/docker.sock
     user: '0:0'
     networks:
-        - kafka_network
         - hdfs_network
         - airflow_network
 
@@ -78,8 +77,6 @@ services:
 volumes:
     airflow_postgres_data:
 networks:
-    kafka_network:
-        external: true
     hdfs_network:
         external: true
     airflow_network:

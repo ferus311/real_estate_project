@@ -139,31 +139,6 @@ class DetailCrawlerService(BaseService):
     async def kafka_callback(self, result):
         """Send crawled data to Kafka"""
         try:
-            # Đảm bảo result có timestamp
-            result.setdefault("timestamp", datetime.now().isoformat())
-
-            # Làm sạch dữ liệu từ Chotot trước khi gửi đi
-            if result.get("source") == "chotot":
-                # Chuẩn hóa dữ liệu theo model mới (HouseDetailItem)
-                # Giữ nguyên các giá trị string, không cần chuyển đổi sang số
-
-                # Đảm bảo các trường quan trọng tồn tại
-                if "price" not in result or not result["price"]:
-                    result["price"] = "0"
-
-                if "area" not in result or not result["area"]:
-                    result["area"] = "0"
-
-                # Đảm bảo seller_info là dictionary
-                if "seller_info" not in result or not isinstance(
-                    result["seller_info"], dict
-                ):
-                    result["seller_info"] = {}
-
-                # Thêm các trường cần thiết cho mô hình dữ liệu hạ nguồn nếu chúng không tồn tại
-                result.setdefault("listing_id", "")
-                result.setdefault("url", "")
-
             # Gửi dữ liệu tới Kafka
             success = self.producer.send(self.output_topic, result)
 
@@ -259,19 +234,16 @@ class DetailCrawlerService(BaseService):
             try:
                 message = await asyncio.wait_for(self.url_queue.get(), timeout=1.0)
                 url = message["url"]
-                metadata = {k: v for k, v in message.items() if k != "url"}
+                metadata = {
+                    "source": self.source,
+                    "crawl_timestamp": int(datetime.now().timestamp()),
+                    "url": url,
+                }
 
                 try:
                     async with self.semaphore:
                         self.update_stats("processed")
                         logger.info(f"[Worker {worker_id}] Processing: {url}")
-
-                        # Phát hiện nguồn dữ liệu từ URL nếu không được chỉ định
-                        if "source" not in metadata:
-                            if "chotot.com" in url:
-                                metadata["source"] = "chotot"
-                            elif "batdongsan.com" in url:
-                                metadata["source"] = "batdongsan"
 
                         # Sử dụng crawler phù hợp để crawl
                         detail_data = await self.crawler.crawl_detail(url)

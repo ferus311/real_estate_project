@@ -1,5 +1,6 @@
 import re
 from bs4 import BeautifulSoup
+from datetime import datetime
 from common.models.house_list import HouseListItem
 from common.models.house_detail import HouseDetailItem
 
@@ -92,17 +93,43 @@ def extract_coordinates_from_iframe(soup):
     return None, None
 
 
+def extract_posted_date(soup):
+    """
+    Extract the posted date from the detail page and convert it to epoch seconds.
+    Looks for elements like: <div class="re__pr-short-info-item js__pr-config-item"><span class="title">Ngày đăng</span><span class="value">20/05/2025</span></div>
+
+    Returns:
+        int or None: The posted date as epoch seconds, or None if not found/invalid
+    """
+    # Using a more specific selector for the date div with both classes
+    date_items = soup.select("div.re__pr-short-info-item.js__pr-config-item")
+    for item in date_items:
+        title_span = item.select_one("span.title")
+        if title_span and "Ngày đăng" in title_span.get_text(strip=True):
+            value_span = item.select_one("span.value")
+            if value_span:
+                date_str = value_span.get_text(strip=True)
+                try:
+                    # Parse date in dd/mm/yyyy format
+                    date_obj = datetime.strptime(date_str, "%d/%m/%Y")
+                    # Convert to epoch seconds
+                    return int(date_obj.timestamp())
+                except ValueError:
+                    # If date format is incorrect, return None
+                    pass
+    return None
+
+
 def extract_detail_info(html_content: str):
     soup = BeautifulSoup(html_content, "html.parser")
 
     title = extract_text(soup, "h1.re__pr-title.pr-title.js__pr-title")
-    location_text = extract_text(
-        soup, "span.re__pr-short-description.js__pr-address"
-    )
+    location_text = extract_text(soup, "span.re__pr-short-description.js__pr-address")
     price_per_m2 = extract_price_per_m2_alt(soup)
     latitude, longitude = extract_coordinates_from_iframe(soup)
     description = extract_text(soup, "div.re__section-body.re__detail-content")
     specs = extract_specifications(soup)
+    posted_date_epoch = extract_posted_date(soup)
 
     return HouseDetailItem(
         title=title,
@@ -115,11 +142,13 @@ def extract_detail_info(html_content: str):
         bedroom=specs.get("bedroom"),
         bathroom=specs.get("bathroom"),
         house_direction=specs.get("house_direction"),
-        balcony_direction=specs.get("balcony_direction"),
+        # balcony_direction=specs.get("balcony_direction"),
         legal_status=specs.get("legal_status"),
         interior=specs.get("interior"),
         facade_width=specs.get("facade_width"),
         road_width=specs.get("road_width"),
         floor_count=specs.get("floor_count"),
         description=description,
+        source="batdongsan",
+        posted_date=str(posted_date_epoch) if posted_date_epoch else None,
     )

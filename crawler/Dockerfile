@@ -68,11 +68,3 @@ RUN apt-get update && apt-get install -y \
 
 # Copy the crawler code
 COPY . .
-
-# Make the entrypoint script executable
-# RUN chmod +x /app/entrypoint.sh
-
-# Set the entrypoint
-# ENTRYPOINT ["/app/entrypoint.sh"]
-# Default command (can be overridden from docker compose)
-# CMD ["list_crawler", "run"]

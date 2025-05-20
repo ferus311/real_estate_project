@@ -35,10 +35,28 @@ class HDFSStorage(BaseStorage):
 
         super().__init__(base_path=base_path)
 
-        # Sử dụng HDFSWriter cho các thao tác HDFS
-        self.writer = HDFSWriter(namenode=namenode, user=user, base_path=base_path)
-        self.namenode = namenode
-        self.user = user
+        # Log connection information
+        logger.info(
+            f"Initializing HDFS storage with namenode: {namenode}, user: {user}, base_path: {base_path}"
+        )
+
+        try:
+            # Sử dụng HDFSWriter cho các thao tác HDFS
+            self.writer = HDFSWriter(namenode=namenode, user=user, base_path=base_path)
+            self.namenode = namenode
+            self.user = user
+
+            # Test connection by checking if base path exists
+            if not self.writer.ensure_directory_exists(base_path):
+                logger.warning(
+                    f"Could not create or verify base path {base_path} on HDFS. Check your connection parameters."
+                )
+        except Exception as e:
+            logger.error(f"Error initializing HDFS connection: {e}")
+            # Still initialize the writer, but log the error for troubleshooting
+            self.writer = HDFSWriter(namenode=namenode, user=user, base_path=base_path)
+            self.namenode = namenode
+            self.user = user
 
         logger.info(f"Initialized HDFS storage with connection to {namenode}")
 
@@ -148,6 +166,7 @@ class HDFSStorage(BaseStorage):
         """
         # Chuyển đổi dữ liệu mới thành DataFrame
         new_df = self._convert_to_dataframe(data)
+        # Lưu ý: Không cần chuyển đổi kiểu ở đây vì HDFSWriter sẽ thực hiện việc này
 
         # Xác định định dạng file từ đuôi file
         file_format = file_path.rsplit(".", 1)[-1].lower()

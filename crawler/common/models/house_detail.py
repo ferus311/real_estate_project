@@ -18,15 +18,15 @@ class HouseDetailItem:
     location: Optional[str] = None
 
     # Trường tùy chọn (đặc thù của từng trang)
-    house_direction: Optional[str] = None  # Chỉ có ở batdongsan
-    balcony_direction: Optional[str] = None
+    house_direction: Optional[str] = None
+    # balcony_direction: Optional[str] = None
     facade_width: Optional[str] = None
     road_width: Optional[str] = None
     floor_count: Optional[str] = None
     interior: Optional[str] = None
-    furnishing_sell: Optional[str] = None  # Chỉ có ở chotot
-    deposit: Optional[str] = None
+    # deposit: Optional[str] = None
     seller_info: Optional[dict] = None  # Lưu thông tin người bán của chotot
 
     # Các trường khác nếu cần
     source: Optional[str] = None  # Để biết dữ liệu từ batdongsan hay chotot
+    posted_date: Optional[str] = None  # Ngày đăng tin theo giây epoch

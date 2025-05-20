@@ -2,7 +2,6 @@
 x-crawler-common: &crawler-common
     restart: unless-stopped
     networks:
-        - kafka_network
         - hdfs_network
 
 services:
@@ -95,7 +94,5 @@ services:
             - ../../crawler:/app/crawler
 
 networks:
-    kafka_network:
-        external: true
     hdfs_network:
         external: true

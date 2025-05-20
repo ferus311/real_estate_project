@@ -4,15 +4,25 @@ import asyncio
 import random
 from datetime import datetime
 
+
 class BaseDetailCrawler(ABC):
     """
     Lớp cơ sở cho tất cả các detail crawler
     """
+
     def __init__(self, source: str, max_concurrent: int = 5):
+        import os
+
         self.source = source
         self.max_concurrent = max_concurrent
         self.running = True
-        self.checkpoint_file = f"./checkpoint/{source}_detail_checkpoint.json"
+
+        # Đảm bảo thư mục checkpoint tồn tại
+        checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "./checkpoint")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        self.checkpoint_file = os.path.join(
+            checkpoint_dir, f"{source}_detail_checkpoint.json"
+        )
 
     @abstractmethod
     async def crawl_detail(self, url: str) -> Dict[str, Any]:
@@ -28,7 +38,9 @@ class BaseDetailCrawler(ABC):
         pass
 
     @abstractmethod
-    async def process_result(self, result: Dict[str, Any], callback: Optional[Callable] = None) -> bool:
+    async def process_result(
+        self, result: Dict[str, Any], callback: Optional[Callable] = None
+    ) -> bool:
         """
         Xử lý kết quả crawl
 
@@ -41,7 +53,9 @@ class BaseDetailCrawler(ABC):
         """
         pass
 
-    async def crawl_batch(self, urls: List[str], callback: Optional[Callable] = None) -> Dict[str, Any]:
+    async def crawl_batch(
+        self, urls: List[str], callback: Optional[Callable] = None
+    ) -> Dict[str, Any]:
         """
         Crawl một batch các URLs
 
@@ -53,11 +67,7 @@ class BaseDetailCrawler(ABC):
             Dict: Thống kê kết quả crawl
         """
         sem = asyncio.Semaphore(self.max_concurrent)
-        results = {
-            "total": len(urls),
-            "successful": 0,
-            "failed": 0
-        }
+        results = {"total": len(urls), "successful": 0, "failed": 0}
 
         async def process_url(url: str) -> bool:
             async with sem:
@@ -79,7 +89,9 @@ class BaseDetailCrawler(ABC):
 
         return results
 
-    def get_random_delay(self, min_seconds: float = 0.5, max_seconds: float = 2.0) -> float:
+    def get_random_delay(
+        self, min_seconds: float = 0.5, max_seconds: float = 2.0
+    ) -> float:
         """
         Tạo thời gian delay ngẫu nhiên để tránh bị block
 

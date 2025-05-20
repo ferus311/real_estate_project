@@ -2,15 +2,17 @@ from typing import Dict, Type, Optional, Any
 import logging
 import os
 
-from common.base.base_crawler import BaseCrawler
+from common.base.base_list_crawler import BaseListCrawler
 from common.base.base_detail_crawler import BaseDetailCrawler
 from common.base.base_api_crawler import BaseApiCrawler
 
 # Import các crawler cụ thể
-from sources.batdongsan.playwright.batdongsan_crawler import BatdongsanCrawler
+from sources.batdongsan.playwright.list_crawler_impl import (
+    BatdongsanListCrawler,
+)
 from sources.batdongsan.playwright.detail_crawler_impl import BatdongsanDetailCrawler
 from sources.chotot.api.detail_crawler_impl import ChototDetailCrawler
-from sources.chotot.api.chotot_api_crawler import ChototApiCrawler
+from sources.chotot.api.api_crawler_impl import ChototApiCrawler
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +23,10 @@ class CrawlerFactory:
     """
 
     # Registry cho list crawler
-    LIST_CRAWLER_REGISTRY: Dict[str, Dict[str, Type[BaseCrawler]]] = {
+    LIST_CRAWLER_REGISTRY: Dict[str, Dict[str, Type[BaseListCrawler]]] = {
         "batdongsan": {
-            "playwright": BatdongsanCrawler,
+            "default": BatdongsanListCrawler,
+            "playwright": BatdongsanListCrawler,
             # Thêm các crawler khác cho batdongsan ở đây
         }
         # Thêm các source khác ở đây
@@ -31,6 +34,9 @@ class CrawlerFactory:
 
     # Registry cho detail crawler
     DETAIL_CRAWLER_REGISTRY: Dict[str, Dict[str, Type[BaseDetailCrawler]]] = {
+        "default": {
+            "default": BatdongsanDetailCrawler,
+        },
         "batdongsan": {
             "default": BatdongsanDetailCrawler,
         },
@@ -42,6 +48,9 @@ class CrawlerFactory:
 
     # Registry cho API crawler
     API_CRAWLER_REGISTRY: Dict[str, Dict[str, Type[BaseApiCrawler]]] = {
+        "default": {
+            "default": ChototApiCrawler,
+        },
         "chotot": {
             "default": ChototApiCrawler,
         },
@@ -51,7 +60,7 @@ class CrawlerFactory:
     @classmethod
     def create_list_crawler(
         cls, source: str, crawler_type: str = "default", **kwargs
-    ) -> BaseCrawler:
+    ) -> BaseListCrawler:
         """
         Tạo một list crawler dựa trên source và crawler_type
 
@@ -61,7 +70,7 @@ class CrawlerFactory:
             **kwargs: Tham số bổ sung cho crawler
 
         Returns:
-            BaseCrawler: Instance của crawler
+            BaseListCrawler: Instance của crawler
 
         Raises:
             ValueError: Nếu không tìm thấy crawler phù hợp
@@ -71,7 +80,7 @@ class CrawlerFactory:
         crawler_type = crawler_type or os.environ.get("CRAWLER_TYPE", "playwright")
 
         if source not in cls.LIST_CRAWLER_REGISTRY:
-            raise ValueError(f"Unsupported source: {source}")
+            raise ValueError(f" Unsupported source: {source}")
 
         available_types = cls.LIST_CRAWLER_REGISTRY[source]
 
@@ -138,7 +147,7 @@ class CrawlerFactory:
 
     @classmethod
     def register_list_crawler(
-        cls, source: str, crawler_type: str, crawler_class: Type[BaseCrawler]
+        cls, source: str, crawler_type: str, crawler_class: Type[BaseListCrawler]
     ) -> None:
         """
         Đăng ký một list crawler mới

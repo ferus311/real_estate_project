@@ -1,0 +1,26 @@
+{
+	"title": "Bán nhà mặt phố khu nhà ở Thạch Bàn, Thạch Bàn, Long Biên, Hà Nội, 9,95 tỷ, 42,3 m2 giá ưu đãi",
+	"description": "Nhà mặt phố tại khu nhà ở Thạch Bàn, Thạch Bàn, Long Biên, Hà Nội với diện tích 42,3 m² và giá 9,95 tỷ VND.- Mặt tiền 4m, phù hợp cho kinh doanh.- Đường vào rộng 6m, thuận tiện cho xe ô tô di chuyển.- Pháp lý đầy đủ, sổ đỏ.- Nội thất đầy đủ, chỉ việc vào ở.Cách trường học, cách chợ/siêu thị, cách công viên trong tầm 2km.Liên hệ để biết thêm thông tin chi tiết: Trần Văn Sự -0978 369 ***.",
+	"price": "9,95 tỷ",
+	"area": "42,3 m²",
+	"price_per_m2": "~235,22 triệu/m²",
+	"bedroom": null,
+	"bathroom": null,
+	"legal_status": "Sổ đỏ/ Sổ hồng.",
+	"latitude": "21.0207919033596",
+	"longitude": "105.917447405306",
+	"location": "Phường Thạch Bàn, Long Biên, Hà Nội",
+	"house_direction": null,
+	"facade_width": "4 m",
+	"road_width": "6 m",
+	"floor_count": null,
+	"interior": "Đầy đủ.",
+
+
+
+	"seller_info": null,
+	"source": "batdongsan",
+	"posted_date": "1747180800",
+	"crawl_timestamp": 1747735784,
+	"url": "https://batdongsan.com.vn/ban-nha-mat-pho-phuong-thach-ban-1/-khu-o-long-bien-ha-noi-9-95-ty-42-3-m2-gia-uu-dai-pr42967052"
+}
