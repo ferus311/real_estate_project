@@ -17,6 +17,12 @@ sys.path.append(
 
 from common.queue.kafka_client import KafkaConsumer, KafkaProducer
 from common.utils.logging_utils import setup_logging
+from common.utils.data_utils import (
+    determine_data_type,
+    ensure_data_metadata,
+    is_list_data,
+    normalize_list_data,
+)
 from common.base.base_service import BaseService
 from common.base.base_storage import BaseStorage
 from common.factory.storage_factory import StorageFactory
@@ -43,9 +49,9 @@ class StorageService(BaseService):
         self.group_id = os.environ.get("KAFKA_GROUP_ID", "storage-service-group")
         self.file_prefix = os.environ.get("FILE_PREFIX", "property_data")
         self.file_format = os.environ.get(
-            "FILE_FORMAT", "parquet"
-        )  # parquet, csv, json
-        self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "2"))
+            "FILE_FORMAT", "auto"
+        )  # auto, parquet, csv, json, avro
+        self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "10"))
         self.max_file_size_mb = int(os.environ.get("MAX_FILE_SIZE_MB", "128"))
         self.max_retries = int(os.environ.get("MAX_RETRIES", "3"))
         self.retry_delay = int(os.environ.get("RETRY_DELAY", "1"))  # Giây
@@ -58,7 +64,7 @@ class StorageService(BaseService):
         # Khi bật run_once_mode, service sẽ tự động dừng sau idle_timeout giây không có message mới
         self.run_once_mode = os.environ.get("RUN_ONCE_MODE", "false").lower() == "true"
         # Thời gian chờ tối đa không có message trước khi dừng (mặc định: 1 giờ)
-        self.idle_timeout = int(os.environ.get("IDLE_TIMEOUT", "3600"))
+        self.idle_timeout = int(os.environ.get("IDLE_TIMEOUT", "120"))
         # Theo dõi thời gian nhận message cuối cùng để phát hiện thời gian không hoạt động
         self.last_message_time = time.time()
 
@@ -201,6 +207,19 @@ class StorageService(BaseService):
             except Exception as e:
                 logger.error(f"Lỗi khi xử lý file backup {file}: {e}")
 
+    def _determine_data_type(self, message: Dict[str, Any]) -> str:
+        """
+        Xác định loại dữ liệu từ message
+
+        Args:
+            message: Message từ Kafka
+
+        Returns:
+            str: Loại dữ liệu (list, detail, api)
+        """
+        # Sử dụng utility function từ common để xác định data_type
+        return determine_data_type(message)
+
     def flush_buffer(self, source: str, retry_count=0) -> bool:
         """
         Flush buffer của một nguồn cụ thể vào storage
@@ -217,22 +236,34 @@ class StorageService(BaseService):
             return True
 
         try:
-            # Tạo đường dẫn chỉ phân cấp theo nguồn
-            relative_path = f"{source}"
+            # Xác định loại dữ liệu từ message đầu tiên trong buffer
+            data_type = self._determine_data_type(buffer[0])
 
-            # Tạo tên file có định dạng ngày tháng rõ ràng
+            # Tạo tên file có định dạng rõ ràng
             now = datetime.now()
-            date_str = now.strftime("%Y_%m_%d")
+            date_str = now.strftime("%Y%m%d")
             time_str = now.strftime("%H%M%S")
+            hostname_short = socket.gethostname().split(".")[0]
 
-            # Thêm hostname vào tên file để tránh xung đột khi nhiều service cùng chạy
-            hostname = socket.gethostname()
-            hostname_short = hostname.split(".")[0]  # Lấy phần đầu tiên của hostname
+            # Tên file theo định dạng: {source}_{data_type}_{timestamp}_{hostname}.{format}
+            file_name = f"{source}_{data_type}_{date_str}_{time_str}_{hostname_short}.{self.file_format}"
 
-            file_name = f"{self.file_prefix}_{date_str}_{time_str}_{hostname_short}.{self.file_format}"
-
-            # Tạo đường dẫn đầy đủ
-            full_path = os.path.join(relative_path, file_name)
+            # Xác định đường dẫn lưu trữ dựa vào loại storage
+            if self.storage_type.lower() == "hdfs":
+                # Nếu là HDFS, sử dụng cấu trúc thư mục mới
+                if hasattr(self.storage, "build_path_for_raw_data"):
+                    # Sử dụng hàm mới để xây dựng đường dẫn
+                    base_dir = self.storage.build_path_for_raw_data(source, data_type)
+                    full_path = os.path.join(base_dir, file_name)
+                else:
+                    # Fallback nếu không có hàm mới
+                    year, month = now.strftime("%Y"), now.strftime("%m")
+                    relative_path = f"raw/{source}/{data_type}/{year}/{month}"
+                    full_path = os.path.join(relative_path, file_name)
+            else:
+                # Nếu là storage khác (local), giữ cấu trúc đơn giản
+                relative_path = f"{source}/{data_type}"
+                full_path = os.path.join(relative_path, file_name)
 
             # Lưu dữ liệu
             saved_path = self.storage.save_data(
@@ -304,6 +335,16 @@ class StorageService(BaseService):
             # Xác định nguồn dữ liệu từ message
             source = message.get("source", "unknown")
 
+            # Xác định loại dữ liệu (detail, list, api)
+            data_type = self._determine_data_type(message)
+
+            # Đảm bảo message có đầy đủ metadata và chuẩn hóa dữ liệu
+            processed_message = ensure_data_metadata(message, data_type)
+
+            # Nếu là dữ liệu danh sách, chuẩn hóa thêm
+            if is_list_data(processed_message):
+                processed_message = normalize_list_data(processed_message)
+
             # Khởi tạo buffer cho nguồn nếu chưa có
             if source not in self.data_buffers:
                 self.data_buffers[source] = []
@@ -311,7 +352,7 @@ class StorageService(BaseService):
                 self.last_flush_time[source] = time.time()
 
             # Thêm vào buffer tương ứng
-            self.data_buffers[source].append(message)
+            self.data_buffers[source].append(processed_message)
             self.buffer_sizes[source] = len(self.data_buffers[source])
             self.update_stats("processed")
 

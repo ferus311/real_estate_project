@@ -552,3 +552,79 @@ class HDFSWriter:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{prefix}_{timestamp}.{format}"
         return os.path.join(self.base_path, filename)
+
+    def write_dataframe_to_avro(self, df: pd.DataFrame, hdfs_path: str) -> bool:
+        """
+        Ghi DataFrame vào file Avro trên HDFS
+
+        Args:
+            df: DataFrame cần lưu
+            hdfs_path: Đường dẫn đích trên HDFS
+
+        Returns:
+            bool: True nếu thành công, False nếu thất bại
+        """
+        try:
+            # Đảm bảo thư mục cha tồn tại
+            parent_dir = os.path.dirname(hdfs_path)
+            self.ensure_directory_exists(parent_dir)
+
+            # Tạo file tạm local
+            with tempfile.NamedTemporaryFile(suffix=".avro", delete=False) as temp_file:
+                temp_path = temp_file.name
+
+            try:
+                # Chuyển đổi các giá trị trong DataFrame thành một list các dict
+                records = df.to_dict("records")
+
+                try:
+                    import fastavro
+
+                    # Tạo schema Avro từ DataFrame
+                    schema = {
+                        "namespace": "realestate.avro",
+                        "type": "record",
+                        "name": "Property",
+                        "fields": [
+                            {"name": col, "type": ["null", "string"], "default": None}
+                            for col in df.columns
+                        ],
+                    }
+
+                    # Convert data to strings
+                    for record in records:
+                        for key, value in record.items():
+                            if value is not None and not isinstance(value, str):
+                                record[key] = str(value)
+
+                    # Write to Avro file
+                    with open(temp_path, "wb") as out_file:
+                        fastavro.writer(out_file, schema, records)
+
+                except ImportError:
+                    # Fallback to simple JSON if fastavro is not available
+                    logger.warning(
+                        "fastavro not available, falling back to JSON format"
+                    )
+                    with open(temp_path, "w") as out_file:
+                        json.dump(records, out_file)
+                    # Rename to indicate it's actually JSON
+                    hdfs_path = hdfs_path.replace(".avro", ".json")
+
+                # Upload lên HDFS
+                self.client.upload(hdfs_path, temp_path, overwrite=True)
+                logger.info(f"Saved DataFrame with {len(df)} rows to HDFS: {hdfs_path}")
+                return True
+
+            except Exception as e:
+                logger.error(f"Error writing DataFrame to HDFS: {e}")
+                return False
+
+            finally:
+                # Xóa file tạm
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+        except Exception as e:
+            logger.error(f"Error in Avro writer: {e}. Falling back to JSON.")
+            return self.write_dataframe_to_json(df, hdfs_path.replace(".avro", ".json"))

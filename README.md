@@ -183,6 +183,46 @@ Dữ liệu bất động sản được lưu trữ với các trường chính:
 
 ## Quy trình xử lý dữ liệu
 
+
+```
+/realestate/
+│
+├── raw/                          # Dữ liệu thô từ các nguồn
+│   ├── batdongsan/
+│   │   ├── list/yyyy/mm/         # Phân vùng theo năm/tháng
+│   │   └── detail/yyyy/mm/
+│   └── chotot/
+│       └── api/yyyy/mm/
+│
+├── processed/                    # Dữ liệu đã xử lý
+│   ├── cleaned/                  # Dữ liệu đã làm sạch
+│   │   └── yyyy/mm/
+│   ├── integrated/              # Dữ liệu đã tích hợp từ nhiều nguồn
+│   │   └── yyyy/mm/
+│   └── analytics/               # Dữ liệu tổng hợp cho phân tích
+│       ├── price_trends/yyyy/mm/
+│       ├── region_stats/yyyy/mm/
+│       └── property_metrics/yyyy/mm/
+│
+├── ml/                          # Dữ liệu và mô hình ML
+│   ├── features/yyyy/mm/        # Đặc trưng cho ML
+│   ├── training/yyyy/mm/        # Dữ liệu huấn luyện
+│   ├── models/                  # Các phiên bản mô hình
+│   │   ├── price_model_v1/
+│   │   └── price_model_v2/
+│   └── predictions/yyyy/mm/     # Kết quả dự đoán
+│
+├── app/                         # Dữ liệu phục vụ web/API
+│   ├── listings/                # Dữ liệu tin đăng
+│   ├── insights/                # Dữ liệu phân tích thị trường
+│   └── recommendations/         # Dữ liệu đề xuất
+│
+└── temp/                        # Dữ liệu tạm thời
+    ├── stage/                   # Khu vực tạm cho quá trình xử lý
+    └── checkpoints/             # Checkpoints cho Spark Streaming
+
+```
+
 1. **Thu thập dữ liệu**:
 
     - Crawl danh sách URL từ các trang nguồn

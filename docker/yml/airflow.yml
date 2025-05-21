@@ -12,14 +12,12 @@ x-airflow-common: &airflow-common
         - ../../data_processing/airflow/dags:/opt/airflow/dags
         - ../../data_processing/airflow/logs:/opt/airflow/logs
         - ../../data_processing/airflow/plugins:/opt/airflow/plugins
-        - ../../crawler:/opt/airflow/crawler
-        - ../../data_processing:/opt/airflow/data_processing
+        # - ../volumes/crawler/checkpoint:/opt/airflow/checkpoint
         - /var/run/docker.sock:/var/run/docker.sock
     user: '0:0'
     networks:
         - hdfs_network
         - airflow_network
-
 
 services:
     postgres:
@@ -80,6 +78,4 @@ networks:
     hdfs_network:
         external: true
     airflow_network:
-        # driver: bridge
         name: airflow_network
-

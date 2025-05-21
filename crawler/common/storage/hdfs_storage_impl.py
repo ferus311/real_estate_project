@@ -60,12 +60,108 @@ class HDFSStorage(BaseStorage):
 
         logger.info(f"Initialized HDFS storage with connection to {namenode}")
 
+    def build_path_for_raw_data(self, source: str, data_type: str) -> str:
+        """
+        Xây dựng đường dẫn cho dữ liệu thô theo kiến trúc thư mục mới
+
+        Args:
+            source: Nguồn dữ liệu (ví dụ: batdongsan, chotot)
+            data_type: Loại dữ liệu (ví dụ: list, detail, api)
+
+        Returns:
+            str: Đường dẫn thư mục cho dữ liệu thô
+        """
+        # Lấy năm và tháng hiện tại
+        now = datetime.now()
+        year, month = now.strftime("%Y"), now.strftime("%m")
+
+        # Tạo đường dẫn theo cấu trúc: /realestate/raw/{source}/{data_type}/{year}/{month}/
+        raw_path = f"/realestate/raw/{source}/{data_type}/{year}/{month}"
+
+        # Đảm bảo thư mục tồn tại
+        self.writer.ensure_directory_exists(raw_path)
+
+        return raw_path
+
+    def build_path_for_processed_data(
+        self, process_type: str, source: str = None, category: str = None
+    ) -> str:
+        """
+        Xây dựng đường dẫn cho dữ liệu đã xử lý theo kiến trúc thư mục mới
+
+        Args:
+            process_type: Loại xử lý (ví dụ: cleaned, integrated, analytics)
+            source: Nguồn dữ liệu (tùy chọn, ví dụ: batdongsan, chotot)
+            category: Danh mục phân tích (tùy chọn, ví dụ: price_trends, region_stats)
+
+        Returns:
+            str: Đường dẫn thư mục cho dữ liệu đã xử lý
+        """
+        # Lấy năm và tháng hiện tại
+        now = datetime.now()
+        year, month = now.strftime("%Y"), now.strftime("%m")
+
+        # Xây dựng đường dẫn dựa vào loại xử lý
+        if process_type == "analytics" and category:
+            # Ví dụ: /realestate/processed/analytics/price_trends/2025/05/
+            path = f"/realestate/processed/{process_type}/{category}/{year}/{month}"
+        elif source:
+            # Ví dụ: /realestate/processed/cleaned/2025/05/batdongsan/
+            path = f"/realestate/processed/{process_type}/{year}/{month}/{source}"
+        else:
+            # Ví dụ: /realestate/processed/integrated/2025/05/
+            path = f"/realestate/processed/{process_type}/{year}/{month}"
+
+        # Đảm bảo thư mục tồn tại
+        self.writer.ensure_directory_exists(path)
+
+        return path
+
+    def _choose_optimal_format_for_path(
+        self, file_path: str, data_type: str = "detail"
+    ) -> str:
+        """
+        Xác định định dạng lưu trữ tối ưu dựa vào đường dẫn và loại dữ liệu
+
+        Args:
+            file_path: Đường dẫn file
+            data_type: Loại dữ liệu (detail, list, api)
+
+        Returns:
+            str: Định dạng lưu trữ phù hợp (parquet, json, avro, csv)
+        """
+        # Nếu đường dẫn chứa '/raw/' thì sử dụng JSON cho dữ liệu thô
+        if "/raw/" in file_path:
+            # Dữ liệu thô (raw) lưu dưới dạng JSON để dễ đọc và tương thích tốt
+            return "json"
+
+        # Nếu đường dẫn chứa '/processed/' thì sử dụng định dạng tối ưu cho phân tích
+        elif "/processed/" in file_path:
+            # Dữ liệu đã xử lý nên lưu dưới dạng Parquet để phân tích hiệu quả
+            return "parquet"
+
+        # Nếu đường dẫn chứa '/ml/' thì sử dụng định dạng phù hợp cho ML
+        elif "/ml/" in file_path:
+            # Dữ liệu ML cũng nên lưu dưới dạng Parquet
+            return "parquet"
+
+        # Nếu không xác định được, sử dụng định dạng mặc định dựa vào loại dữ liệu
+        elif data_type == "detail":
+            # Chi tiết bất động sản có nhiều trường, nên dùng Parquet
+            return "parquet"
+        elif data_type == "list":
+            # Danh sách URL có thể dùng CSV đơn giản
+            return "csv"
+        else:
+            # Mặc định sử dụng JSON cho khả năng tương thích cao
+            return "json"
+
     def save_data(
         self,
         data: Union[List[Dict[str, Any]], pd.DataFrame],
         file_name: Optional[str] = None,
         prefix: str = "data",
-        file_format: str = "parquet",
+        file_format: str = "auto",
     ) -> str:
         """
         Lưu dữ liệu vào HDFS
@@ -74,7 +170,7 @@ class HDFSStorage(BaseStorage):
             data: Dữ liệu cần lưu (list of dicts hoặc DataFrame)
             file_name: Tên file cụ thể (nếu None sẽ tự động tạo)
             prefix: Tiền tố cho tên file nếu tự động tạo
-            file_format: Định dạng file để lưu (parquet, csv, json)
+            file_format: Định dạng file để lưu (parquet, csv, json, avro, auto)
 
         Returns:
             str: Đường dẫn đến file đã lưu trên HDFS
@@ -89,6 +185,17 @@ class HDFSStorage(BaseStorage):
         # Tạo tên file nếu không được cung cấp
         if not file_name:
             file_name = self.generate_file_name(prefix, file_format)
+
+        # Xác định loại dữ liệu (detail, list, api) dựa vào tên file
+        data_type = "detail"  # Mặc định
+        if "list" in file_name:
+            data_type = "list"
+        elif "api" in file_name:
+            data_type = "api"
+
+        # Xác định định dạng file tối ưu nếu định dạng là "auto"
+        if file_format == "auto":
+            file_format = self._choose_optimal_format_for_path(file_name, data_type)
 
         # Đảm bảo file_name có đuôi phù hợp với định dạng
         if not file_name.endswith(f".{file_format}"):
@@ -106,6 +213,8 @@ class HDFSStorage(BaseStorage):
             success = self.writer.write_dataframe_to_csv(df, hdfs_path)
         elif file_format == "json":
             success = self.writer.write_dataframe_to_json(df, hdfs_path)
+        elif file_format == "avro":
+            success = self.writer.write_dataframe_to_avro(df, hdfs_path)
         else:
             logger.warning(
                 f"Unsupported file format: {file_format}, using parquet instead"

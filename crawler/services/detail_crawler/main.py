@@ -5,6 +5,7 @@ import signal
 import asyncio
 import logging
 import json
+import argparse
 from datetime import datetime
 from typing import Dict, List, Any, Type
 from collections import defaultdict
@@ -16,6 +17,7 @@ sys.path.append(
 
 from common.queue.kafka_client import KafkaConsumer, KafkaProducer
 from common.utils.logging_utils import setup_logging
+from common.utils.data_utils import determine_data_type, ensure_data_metadata
 from common.base.base_service import BaseService
 from common.base.base_detail_crawler import BaseDetailCrawler
 from common.factory.crawler_factory import CrawlerFactory
@@ -36,6 +38,11 @@ class DetailCrawlerService(BaseService):
         self.retry_delay = int(os.environ.get("RETRY_DELAY", "5"))
         self.crawler_type = os.environ.get("CRAWLER_TYPE", "default")
         self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
+
+        # Auto-stop mechanism
+        self.run_once_mode = os.environ.get("RUN_ONCE_MODE", "false").lower() == "true"
+        self.idle_timeout = int(os.environ.get("IDLE_TIMEOUT", "120"))  # Default 1 hour
+        self.last_message_time = time.time()
 
         # Kafka clients
         self.consumer = KafkaConsumer(
@@ -76,6 +83,15 @@ class DetailCrawlerService(BaseService):
         # Signal handling
         signal.signal(signal.SIGINT, self.stop)
         signal.signal(signal.SIGTERM, self.stop)
+
+        # Log configuration
+        if self.run_once_mode:
+            logger.info(
+                f"Detail Crawler Service initialized with source={self.source} in auto-stop mode "
+                f"(will stop after {self.idle_timeout} seconds without messages)"
+            )
+        else:
+            logger.info(f"Detail Crawler Service initialized with source={self.source}")
 
     def _get_crawler(self) -> BaseDetailCrawler:
         """Lấy crawler instance dựa trên cấu hình"""
@@ -139,6 +155,33 @@ class DetailCrawlerService(BaseService):
     async def kafka_callback(self, result):
         """Send crawled data to Kafka"""
         try:
+            # Ensure we have a valid JSON-serializable dictionary
+            if not isinstance(result, dict):
+                logger.error(
+                    f"[Kafka] Invalid result type: {type(result)}, expected dict"
+                )
+                self.update_stats("failed")
+                return False
+
+            # Check for required fields to ensure it's a valid property item
+            if "url" not in result:
+                logger.error("[Kafka] Missing required 'url' field in result")
+                self.update_stats("failed")
+                return False
+
+            # Pre-validate that the data is JSON serializable
+            try:
+                import json
+
+                json_str = json.dumps(result)
+                # Try parsing it back to verify it's valid
+                json.loads(json_str)
+            except (TypeError, ValueError, json.JSONDecodeError) as e:
+                logger.error(f"[Kafka] JSON serialization error: {e}")
+                logger.error(f"[Kafka] Problem with keys: {list(result.keys())}")
+                self.update_stats("failed")
+                return False
+
             # Gửi dữ liệu tới Kafka
             success = self.producer.send(self.output_topic, result)
 
@@ -166,6 +209,8 @@ class DetailCrawlerService(BaseService):
         """Consume URLs from Kafka and add to queue"""
         logger.info("Starting Kafka consumer loop")
         batch = []
+        empty_polls_count = 0
+        max_empty_polls = 10  # Số lần poll không có kết quả liên tiếp trước khi dừng
 
         while self.running:
             try:
@@ -177,6 +222,11 @@ class DetailCrawlerService(BaseService):
 
                 message = self.consumer.consume(timeout=1.0)
                 if message and "url" in message:
+                    # Có message, reset bộ đếm
+                    empty_polls_count = 0
+
+                    # Update the last message time when we receive a valid message
+                    self.last_message_time = time.time()
                     batch.append(message)
 
                     # Khi đủ batch hoặc gần đầy, gửi qua batch queue
@@ -184,6 +234,9 @@ class DetailCrawlerService(BaseService):
                         await self.batch_queue.put(batch.copy())
                         batch.clear()
                 else:
+                    # Không có message, tăng bộ đếm
+                    empty_polls_count += 1
+
                     if batch:
                         await self.batch_queue.put(batch.copy())
                         batch.clear()
@@ -197,6 +250,40 @@ class DetailCrawlerService(BaseService):
                             f"[Kafka] Committing offset due to time interval ({self.commit_interval}s)"
                         )
                         await self.commit_offset_safely()
+
+                    # Chế độ run-once đợi xử lý hết message và dừng
+                    if self.run_once_mode:
+                        # Nếu không nhận được message nhiều lần liên tiếp và không còn URL đang chờ xử lý
+                        if (
+                            empty_polls_count >= max_empty_polls
+                            and self.url_queue.qsize() == 0
+                        ):
+                            logger.info(
+                                f"Auto-stop: No new messages for {max_empty_polls} consecutive polls. "
+                                f"Assuming all messages have been processed."
+                            )
+
+                            # Đảm bảo tất cả các URLs đã được xử lý trước khi dừng
+                            if (
+                                self.url_queue.qsize() == 0
+                                and self.batch_queue.qsize() == 0
+                            ):
+                                # Commit offset một lần cuối trước khi dừng
+                                if self.processed_urls_count > 0:
+                                    await self.commit_offset_safely()
+
+                                self.running = False
+                                break
+                        # Timeout dựa trên thời gian không nhận được message (cách cũ)
+                        elif current_time - self.last_message_time > self.idle_timeout:
+                            logger.info(
+                                f"Auto-stop: No new messages received for {self.idle_timeout} seconds. Stopping service."
+                            )
+                            # Ensure we commit before stopping
+                            if self.processed_urls_count > 0:
+                                await self.commit_offset_safely()
+                            self.running = False
+                            break
 
                     await asyncio.sleep(0.05)
             except Exception as e:
@@ -245,34 +332,53 @@ class DetailCrawlerService(BaseService):
                         self.update_stats("processed")
                         logger.info(f"[Worker {worker_id}] Processing: {url}")
 
-                        # Sử dụng crawler phù hợp để crawl
-                        detail_data = await self.crawler.crawl_detail(url)
+                        # Set a timeout for the entire crawl operation to avoid hanging
+                        try:
+                            # Sử dụng crawler phù hợp để crawl với timeout
+                            detail_data = await asyncio.wait_for(
+                                self.crawler.crawl_detail(url),
+                                timeout=300,  # 5 minutes max for entire crawl operation
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                f"[Worker {worker_id}] Crawl timeout for URL: {url}"
+                            )
+                            detail_data = None
 
                     if detail_data:
                         if detail_data.get("skipped"):
                             logger.info(f"[Worker {worker_id}] Skipped: {url}")
                         else:
-                            # Thêm metadata và gửi đến Kafka
-                            detail_data.update(metadata)
-                            success = await self.kafka_callback(detail_data)
-
-                            # Kiểm tra điều kiện để commit offset
-                            current_time = time.time()
-                            should_commit_by_count = (
-                                self.processed_urls_count >= self.commit_threshold
-                            )
-                            should_commit_by_time = (
-                                current_time - self.last_commit_time
-                            ) >= self.commit_interval
-
-                            if success and (
-                                should_commit_by_count or should_commit_by_time
-                            ):
-                                logger.debug(
-                                    f"[Worker {worker_id}] Committing offset after {self.processed_urls_count} URLs processed"
+                            # Validate data before sending
+                            if not isinstance(detail_data, dict):
+                                logger.error(
+                                    f"[Worker {worker_id}] Invalid data type: {type(detail_data)}"
                                 )
-                                await self.commit_offset_safely()
+                                detail_data = None
+                            else:
+                                # Thêm metadata và gửi đến Kafka
+                                detail_data.update(metadata)
+                                # Đặt data_type là "detail" và đảm bảo metadata đầy đủ
+                                detail_data["data_type"] = "detail"
+                                detail_data = ensure_data_metadata(detail_data)
+                                success = await self.kafka_callback(detail_data)
 
+                                # Kiểm tra điều kiện để commit offset
+                                current_time = time.time()
+                                should_commit_by_count = (
+                                    self.processed_urls_count >= self.commit_threshold
+                                )
+                                should_commit_by_time = (
+                                    current_time - self.last_commit_time
+                                ) >= self.commit_interval
+
+                                if success and (
+                                    should_commit_by_count or should_commit_by_time
+                                ):
+                                    logger.debug(
+                                        f"[Worker {worker_id}] Committing offset after {self.processed_urls_count} URLs processed"
+                                    )
+                                    await self.commit_offset_safely()
                     else:
                         retry_count = self.failed_urls[url] + 1
                         self.failed_urls[url] = retry_count
@@ -289,6 +395,22 @@ class DetailCrawlerService(BaseService):
                                 f"[Worker {worker_id}] Max retries reached for: {url}"
                             )
                             self.update_stats("failed")
+
+                            # When max retries are reached for a URL, add a failure record to Kafka
+                            # so the URL can be picked up by a retry service later
+                            try:
+                                failure_record = {
+                                    "url": url,
+                                    "source": self.source,
+                                    "error": "Max retries reached",
+                                    "timestamp": int(datetime.now().timestamp()),
+                                    "data_type": "failed_detail",
+                                }
+                                self.producer.send("crawl-failures", failure_record)
+                            except Exception as e:
+                                logger.error(
+                                    f"[Worker {worker_id}] Failed to record failure: {e}"
+                                )
 
                 except Exception as e:
                     logger.error(f"[Worker {worker_id}] Processing error: {e}")
@@ -351,6 +473,58 @@ class DetailCrawlerService(BaseService):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run Detail Crawler Service")
+    parser.add_argument(
+        "--source", type=str, help="Source website (e.g., batdongsan, chotot)"
+    )
+    parser.add_argument(
+        "--max-concurrent", type=int, help="Maximum concurrent crawlers"
+    )
+    parser.add_argument("--batch-size", type=int, help="Batch size for URLs")
+    parser.add_argument("--retry-limit", type=int, help="Maximum retry attempts")
+    parser.add_argument(
+        "--retry-delay", type=int, help="Delay between retries in seconds"
+    )
+    parser.add_argument("--crawler-type", type=str, help="Type of crawler to use")
+    parser.add_argument(
+        "--output-topic", type=str, help="Kafka topic to output data to"
+    )
+    # Auto-stop mode configuration
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Auto-stop mode: stop service after idle_timeout seconds without new messages",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=3600,
+        help="Time in seconds to wait without messages before stopping in auto-stop mode (default: 3600)",
+    )
+
+    args = parser.parse_args()
+
+    # Override environment variables with command line arguments
+    if args.source:
+        os.environ["SOURCE"] = args.source
+    if args.max_concurrent:
+        os.environ["MAX_CONCURRENT"] = str(args.max_concurrent)
+    if args.batch_size:
+        os.environ["BATCH_SIZE"] = str(args.batch_size)
+    if args.retry_limit:
+        os.environ["RETRY_LIMIT"] = str(args.retry_limit)
+    if args.retry_delay:
+        os.environ["RETRY_DELAY"] = str(args.retry_delay)
+    if args.crawler_type:
+        os.environ["CRAWLER_TYPE"] = args.crawler_type
+    if args.output_topic:
+        os.environ["OUTPUT_TOPIC"] = args.output_topic
+    if args.once:
+        os.environ["RUN_ONCE_MODE"] = "true"
+    # Since idle_timeout has a default value, we need to explicitly check if it was provided
+    if args.idle_timeout != 3600 or "IDLE_TIMEOUT" not in os.environ:
+        os.environ["IDLE_TIMEOUT"] = str(args.idle_timeout)
+
     DetailCrawlerService().run()
 
 

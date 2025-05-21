@@ -4,6 +4,7 @@ import socket
 import logging
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -27,7 +28,19 @@ class KafkaProducer:
         try:
             # Nếu value là dict, chuyển đổi thành JSON string
             if isinstance(value, dict):
-                value = json.dumps(value)
+                try:
+                    # Xử lý các giá trị không thể serialize trong dict
+                    # Lọc ra các giá trị None và convert dates/datetimes
+                    clean_value = self._clean_dict_for_json(value)
+                    value = json.dumps(clean_value)
+                except TypeError as e:
+                    logger.error(f"JSON serialization error: {e}")
+                    # Try a more aggressive cleaning approach
+                    cleaned = self._aggressive_clean_for_json(value)
+                    value = json.dumps(cleaned)
+                except Exception as e:
+                    logger.error(f"Failed to serialize dict to JSON: {e}")
+                    return False
 
             # Gửi message đến Kafka
             self.producer.produce(
@@ -41,6 +54,46 @@ class KafkaProducer:
         except Exception as e:
             logger.error(f"Error sending message to Kafka: {e}")
             return False
+
+    def _clean_dict_for_json(self, d):
+        """Clean a dictionary to make it JSON serializable"""
+        clean = {}
+        for k, v in d.items():
+            if v is None:
+                clean[k] = None
+            elif isinstance(v, dict):
+                clean[k] = self._clean_dict_for_json(v)
+            elif isinstance(v, list):
+                clean[k] = [
+                    self._clean_dict_for_json(i) if isinstance(i, dict) else i
+                    for i in v
+                ]
+            elif isinstance(v, (datetime, datetime.date)):
+                clean[k] = v.isoformat()
+            elif hasattr(v, "__dict__"):
+                # Convert objects to dictionaries
+                clean[k] = self._clean_dict_for_json(v.__dict__)
+            else:
+                try:
+                    # Try to convert the value to something JSON serializable
+                    json.dumps(v)
+                    clean[k] = v
+                except (TypeError, ValueError):
+                    # If it can't be serialized, convert to string
+                    clean[k] = str(v)
+        return clean
+
+    def _aggressive_clean_for_json(self, value):
+        """Aggressively clean the object for JSON serialization by converting all complex types to strings"""
+        if isinstance(value, dict):
+            return {k: self._aggressive_clean_for_json(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [self._aggressive_clean_for_json(i) for i in value]
+        elif isinstance(value, (int, float, bool, str, type(None))):
+            return value
+        else:
+            # Convert anything else to a string
+            return str(value)
 
 
 class KafkaConsumer:
@@ -56,6 +109,7 @@ class KafkaConsumer:
                 "group.id": group_id,
                 "auto.offset.reset": "earliest",
                 "enable.auto.commit": False,
+                "max.poll.interval.ms": 600000,  # 10 phút
             }
         )
         self.consumer.subscribe(topics)

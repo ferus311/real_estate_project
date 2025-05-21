@@ -53,6 +53,16 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
+sudo mkdir -p /crawler/checkpoint
+
+
+if ! grep -qs "${PROJECT_DIR}/docker/volumes/crawler/checkpoint" /proc/mounts; then
+    echo "Mounting..."
+    sudo mount --bind /crawler/checkpoint "${PROJECT_DIR}/docker/volumes/crawler/checkpoint"
+else
+    echo "Already mounted"
+fi
+
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
 

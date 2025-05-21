@@ -3,6 +3,8 @@ x-crawler-common: &crawler-common
     restart: unless-stopped
     networks:
         - hdfs_network
+    volumes:
+        - ../volumes/crawler/checkpoint:/app/checkpoint
 
 services:
     # URL Crawler Service - Thu thập URL và đẩy vào queue

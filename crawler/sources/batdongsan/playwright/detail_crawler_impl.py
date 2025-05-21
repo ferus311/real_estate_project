@@ -1,5 +1,7 @@
 import asyncio
 import random
+import json
+import logging
 from typing import Dict, Any, Optional, List, Callable
 from urllib.parse import urlparse
 from datetime import datetime
@@ -8,6 +10,9 @@ from playwright.async_api import async_playwright
 from common.base.base_detail_crawler import BaseDetailCrawler
 from common.utils.checkpoint import load_checkpoint, save_checkpoint
 from sources.batdongsan.playwright.extractors import extract_detail_info
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 
 class BatdongsanDetailCrawler(BaseDetailCrawler):
@@ -46,7 +51,7 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
         if post_id:
             checkpoint = load_checkpoint(self.checkpoint_file)
             if post_id in checkpoint and checkpoint[post_id]:
-                print(f"[Batdongsan Detail] Post {post_id} already crawled")
+                logger.info(f"[Batdongsan Detail] Post {post_id} already crawled")
                 return {"skipped": True, "url": url}
 
         while retries > 0:
@@ -93,15 +98,15 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                             else route.abort()
                         ),
                     )
-                    print(f"[Batdongsan Detail] Crawling {url}")
+                    logger.info(f"[Batdongsan Detail] Crawling {url}")
 
                     try:
                         # Tăng timeout và thêm xử lý lỗi khi điều hướng
                         response = await page.goto(
-                            url, timeout=90000, wait_until="domcontentloaded"
+                            url, timeout=60000, wait_until="domcontentloaded"
                         )
                         if response is None or not response.ok:
-                            print(
+                            logger.warning(
                                 f"[Batdongsan Detail] Failed to load page {url}: HTTP status {response.status if response else 'Unknown'}"
                             )
                             # Thử đợi thêm thời gian nếu trang đang tải
@@ -111,18 +116,43 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                         try:
                             await page.wait_for_load_state("networkidle", timeout=20000)
                         except Exception as e:
-                            print(
+                            logger.warning(
                                 f"[Batdongsan Detail] Timeout waiting for networkidle: {e}"
                             )
                     except Exception as e:
-                        print(f"[Batdongsan Detail] Error during page navigation: {e}")
+                        logger.error(
+                            f"[Batdongsan Detail] Error during page navigation: {e}"
+                        )
                         # Vẫn tiếp tục lấy nội dung nếu có
 
+                    # Lấy HTML content
                     html = await page.content()
-                    detail_info = extract_detail_info(html)
+
+                    # Debug check - save HTML to file if it's potentially causing issues
+                    if html and len(html) < 1000:  # If HTML is suspiciously short
+                        logger.warning(
+                            f"[Batdongsan Detail] Suspicious HTML content (length: {len(html)})"
+                        )
+                        with open(
+                            f"/tmp/bds_debug_{post_id or 'unknown'}.html", "w"
+                        ) as f:
+                            f.write(html)
+
+                    # Extract detail information
+                    try:
+                        detail_info = extract_detail_info(html)
+                    except Exception as extraction_error:
+                        logger.error(
+                            f"[Batdongsan Detail] Error extracting details: {extraction_error}"
+                        )
+                        retries -= 1
+                        await asyncio.sleep(self.get_random_delay())
+                        continue
 
                     if not detail_info:
-                        print(f"[Batdongsan Detail] No data extracted from {url}")
+                        logger.warning(
+                            f"[Batdongsan Detail] No data extracted from {url}"
+                        )
                         retries -= 1
                         await asyncio.sleep(self.get_random_delay())
                         continue
@@ -131,23 +161,41 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                     if post_id:
                         save_checkpoint(self.checkpoint_file, post_id, success=True)
 
-                    # Chuyển đối tượng thành dictionary
-                    detail_dict = (
-                        detail_info.__dict__
-                        if hasattr(detail_info, "__dict__")
-                        else detail_info
-                    )
+                    # Chuyển đối tượng thành dictionary và validate
+                    try:
+                        if hasattr(detail_info, "__dict__"):
+                            detail_dict = detail_info.__dict__
+                        else:
+                            detail_dict = detail_info
 
-                    return detail_dict
+                        # Validate that the dictionary can be JSON serialized
+                        json_str = json.dumps(detail_dict)
+                        # Test parsing to ensure it's valid JSON
+                        json.loads(json_str)
+
+                        # Add the URL to the result
+                        detail_dict["url"] = url
+
+                        return detail_dict
+                    except (TypeError, json.JSONDecodeError) as json_error:
+                        logger.error(
+                            f"[Batdongsan Detail] JSON serialization error: {json_error}"
+                        )
+                        logger.error(
+                            f"[Batdongsan Detail] Problem with data: {detail_info}"
+                        )
+                        retries -= 1
+                        await asyncio.sleep(self.get_random_delay())
+                        continue
 
             except Exception as e:
-                print(f"[Batdongsan Detail] Error crawling {url}: {e}")
+                logger.error(f"[Batdongsan Detail] Error crawling {url}: {e}")
                 retries -= 1
                 # Tăng thời gian chờ với mỗi lần thử lại
                 delay = self.get_random_delay(
                     1 + (self.max_retries - retries), 3 + (self.max_retries - retries)
                 )
-                print(
+                logger.info(
                     f"[Batdongsan Detail] Retrying in {delay:.2f} seconds ({retries} attempts left)"
                 )
                 await asyncio.sleep(delay)
@@ -159,9 +207,11 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                         # Sử dụng timeout để tránh treo khi đóng browser
                         await asyncio.wait_for(browser.close(), timeout=5.0)
                     except asyncio.TimeoutError:
-                        print(f"[Batdongsan Detail] Timeout when closing browser")
+                        logger.warning(
+                            f"[Batdongsan Detail] Timeout when closing browser"
+                        )
                     except Exception as e:
-                        print(f"[Batdongsan Detail] Error closing browser: {e}")
+                        logger.error(f"[Batdongsan Detail] Error closing browser: {e}")
 
         # Đánh dấu thất bại trong checkpoint
         if post_id:
