@@ -6,6 +6,7 @@ import logging
 import json
 import argparse
 import socket
+import uuid
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import pandas as pd
@@ -20,6 +21,7 @@ from common.utils.logging_utils import setup_logging
 from common.base.base_service import BaseService
 from common.base.base_storage import BaseStorage
 from common.factory.storage_factory import StorageFactory
+from common.utils.property_utils.classifier import get_property_type
 
 from dotenv import load_dotenv
 
@@ -37,22 +39,19 @@ class StorageService(BaseService):
 
         # Cấu hình từ biến môi trường
         self.storage_type = os.environ.get("STORAGE_TYPE", "local")
-        self.batch_size = int(os.environ.get("BATCH_SIZE", "10000"))
+        self.batch_size = int(os.environ.get("BATCH_SIZE", "20000"))
         self.flush_interval = int(os.environ.get("FLUSH_INTERVAL", "300"))  # 5 phút
         self.topic = os.environ.get("KAFKA_TOPIC", "property-data")
         self.group_id = os.environ.get("KAFKA_GROUP_ID", "storage-service-group")
         self.file_prefix = os.environ.get("FILE_PREFIX", "property_data")
+        # Định dạng file mặc định là parquet, nhưng JSON được ưu tiên cho dữ liệu thô
         self.file_format = os.environ.get(
-            "FILE_FORMAT", "parquet"
+            "FILE_FORMAT", "json" if self.storage_type == "hdfs" else "parquet"
         )  # parquet, csv, json
-        self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "2"))
+        self.min_file_size_mb = int(os.environ.get("MIN_FILE_SIZE_MB", "5"))
         self.max_file_size_mb = int(os.environ.get("MAX_FILE_SIZE_MB", "128"))
         self.max_retries = int(os.environ.get("MAX_RETRIES", "3"))
         self.retry_delay = int(os.environ.get("RETRY_DELAY", "1"))  # Giây
-        self.process_backup_on_startup = (
-            os.environ.get("PROCESS_BACKUP_ON_STARTUP", "true").lower() == "true"
-        )
-        self.backup_dir = os.environ.get("BACKUP_DIR", "backup_data")
 
         # Cấu hình cho chế độ auto-stop (dừng tự động sau thời gian không hoạt động)
         # Khi bật run_once_mode, service sẽ tự động dừng sau idle_timeout giây không có message mới
@@ -68,16 +67,16 @@ class StorageService(BaseService):
         # Khởi tạo storage
         self.storage = StorageFactory.create_storage(self.storage_type)
 
-        # Buffer để tích lũy dữ liệu theo nguồn
-        self.data_buffers = {}  # Dict với key là nguồn
-        self.buffer_sizes = {}  # Dict để theo dõi kích thước của mỗi buffer
-        self.last_flush_time = (
-            {}
-        )  # Dict để theo dõi thời gian flush cuối cùng của mỗi nguồn
+        # Buffer để tích lũy dữ liệu theo nguồn và loại bất động sản
+        # Cấu trúc: {source: {property_type: [items]}}
+        self.data_buffers = {}
 
-        # Đảm bảo thư mục backup tồn tại
-        if not os.path.exists(self.backup_dir):
-            os.makedirs(self.backup_dir)
+        # Dict để theo dõi thời gian flush cuối cùng của mỗi nguồn và loại bất động sản
+        # Cấu trúc: {source: {property_type: timestamp}}
+        self.last_flush_time = {}
+
+        # Các loại BĐS được hỗ trợ
+        self.property_types = ["house", "apartment", "land", "commercial", "other"]
 
         logger.info(f"Storage Service initialized with {self.storage_type} storage")
         logger.info(
@@ -92,184 +91,202 @@ class StorageService(BaseService):
         # Set up signal handlers for graceful shutdown
         self._setup_signal_handler()
 
-        # Set up signal handlers for graceful shutdown
-        self._setup_signal_handler()
-
-    def should_flush(self, source: str) -> bool:
+    def should_flush(self, source: str, property_type: str = None) -> bool:
         """
-        Kiểm tra xem có nên flush buffer của nguồn cụ thể không
+        Kiểm tra xem có nên flush buffer của nguồn cụ thể hoặc một loại bất động sản cụ thể không
 
         Args:
             source: Tên nguồn dữ liệu
+            property_type: Loại bất động sản (nếu None, kiểm tra tổng hợp tất cả loại)
 
         Returns:
             bool: True nếu nên flush, False nếu không
         """
-        current_time = time.time()
-        last_flush = self.last_flush_time.get(source, 0)
-        buffer_size = len(self.data_buffers.get(source, []))
-
-        # Ước tính kích thước buffer trong MB (trung bình 1 bản ghi ~ 1KB)
-        estimated_size_mb = buffer_size * 0.001
-
-        # Flush nếu:
-        # 1. Buffer đủ lớn theo số lượng bản ghi
-        # 2. Đã đủ thời gian từ lần flush cuối
-        # 3. Ước tính kích thước đạt mức tối thiểu
-        # 4. Ước tính kích thước vượt quá mức tối đa
-        return (
-            buffer_size >= self.batch_size
-            or (current_time - last_flush) >= self.flush_interval
-            or estimated_size_mb >= self.min_file_size_mb
-            or estimated_size_mb >= self.max_file_size_mb
-        )
-
-    def _save_to_backup(self, source: str, data: List[Dict[str, Any]]) -> bool:
-        """
-        Lưu dữ liệu vào file backup để xử lý lại sau
-
-        Args:
-            source: Nguồn dữ liệu
-            data: Dữ liệu cần lưu
-
-        Returns:
-            bool: True nếu thành công, False nếu thất bại
-        """
-        try:
-            if not os.path.exists(self.backup_dir):
-                os.makedirs(self.backup_dir)
-
-            # Tạo tên file backup với timestamp để tránh trùng lặp
-            hostname = socket.gethostname()
-            now = datetime.now()
-            timestamp = now.strftime("%Y%m%d_%H%M%S")
-            backup_file = f"{self.backup_dir}/{source}_{timestamp}_{hostname}.json"
-
-            with open(backup_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-
-            logger.info(
-                f"Đã lưu {len(data)} bản ghi từ nguồn {source} vào file backup: {backup_file}"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Lỗi khi lưu backup cho nguồn {source}: {e}")
+        if source not in self.data_buffers:
             return False
 
-    def _process_backup_files(self):
-        """Xử lý các file backup từ lần chạy trước"""
-        if not os.path.exists(self.backup_dir):
-            logger.info("Không có thư mục backup để xử lý")
-            return
+        current_time = time.time()
 
-        backup_files = [f for f in os.listdir(self.backup_dir) if f.endswith(".json")]
-        if not backup_files:
-            logger.info("Không tìm thấy file backup nào")
-            return
+        # Nếu không chỉ định property_type, kiểm tra tổng hợp cho toàn bộ nguồn
+        if property_type is None:
+            total_count = 0
+            # Đếm tổng số lượng bản ghi của tất cả các loại bất động sản
+            for prop_type in self.property_types:
+                if prop_type in self.data_buffers[source]:
+                    total_count += len(self.data_buffers[source][prop_type])
 
-        logger.info(f"Tìm thấy {len(backup_files)} file backup cần xử lý")
+            # Flush nếu tổng số lượng bản ghi đạt ngưỡng
+            if total_count >= self.batch_size:
+                return True
 
-        for file in backup_files:
-            try:
-                file_path = os.path.join(self.backup_dir, file)
-                # Xác định nguồn từ tên file (phần đầu tiên trước dấu _)
-                source = file.split("_")[0]
+            # Kiểm tra thời gian flush cuối cùng của bất kỳ loại nào
+            # Nếu có ít nhất một loại đã quá thời gian flush_interval, trả về True
+            for prop_type in self.property_types:
+                if prop_type in self.data_buffers[
+                    source
+                ] and prop_type in self.last_flush_time.get(source, {}):
+                    last_flush = self.last_flush_time[source][prop_type]
+                    if (current_time - last_flush) >= self.flush_interval:
+                        return True
 
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+            # Ước tính kích thước tổng trong MB
+            estimated_size_mb = total_count * 0.001
+            if estimated_size_mb >= self.max_file_size_mb:
+                return True
 
-                logger.info(f"Đang xử lý file backup: {file} với {len(data)} bản ghi")
+            return False
+        else:
+            # Kiểm tra cho một loại bất động sản cụ thể
+            if property_type not in self.data_buffers.get(source, {}):
+                return False
 
-                # Thêm dữ liệu vào buffer hiện tại
-                if source not in self.data_buffers:
-                    self.data_buffers[source] = []
-                    self.buffer_sizes[source] = 0
-                    self.last_flush_time[source] = time.time()
+            buffer_count = len(self.data_buffers[source][property_type])
 
-                self.data_buffers[source].extend(data)
-                self.buffer_sizes[source] = len(self.data_buffers[source])
+            # Lấy thời gian flush cuối cùng cho loại BĐS này
+            last_flush = self.last_flush_time.get(source, {}).get(property_type, 0)
 
-                # Flush buffer ngay lập tức
-                if self.flush_buffer(source):
-                    # Xóa file backup nếu lưu thành công
-                    os.remove(file_path)
-                    logger.info(f"File backup {file} đã được xử lý và xóa")
-                else:
-                    logger.warning(
-                        f"Không thể xử lý file backup {file}, sẽ thử lại sau"
-                    )
-            except Exception as e:
-                logger.error(f"Lỗi khi xử lý file backup {file}: {e}")
+            # Ước tính kích thước trong MB cho loại BĐS này
+            estimated_size_mb = buffer_count * 0.001
 
-    def flush_buffer(self, source: str, retry_count=0) -> bool:
+            # Kiểm tra các tiêu chí để flush
+            return (
+                buffer_count
+                >= self.batch_size  # Sử dụng toàn bộ batch_size thay vì giảm ngưỡng
+                or (current_time - last_flush) >= self.flush_interval
+                or estimated_size_mb
+                >= self.min_file_size_mb  # Sử dụng toàn bộ min_file_size_mb
+                or estimated_size_mb >= self.max_file_size_mb
+            )
+
+    def flush_buffer(
+        self, source: str, specific_property_type=None, retry_count=0
+    ) -> bool:
         """
-        Flush buffer của một nguồn cụ thể vào storage
+        Flush buffer của một nguồn và loại bất động sản cụ thể vào storage
 
         Args:
             source: Tên nguồn dữ liệu
+            specific_property_type: Loại bất động sản cụ thể cần flush (nếu None, kiểm tra tất cả các loại)
             retry_count: Số lần đã thử lại (mặc định: 0)
 
         Returns:
             bool: True nếu thành công, False nếu thất bại
         """
-        buffer = self.data_buffers.get(source, [])
-        if not buffer:
+        if source not in self.data_buffers:
             return True
 
         try:
-            # Tạo đường dẫn chỉ phân cấp theo nguồn
-            relative_path = f"{source}"
+            all_success = True
+            processed_property_types = []  # Theo dõi các loại đã được lưu thành công
+            processed_items_count = 0
 
-            # Tạo tên file có định dạng ngày tháng rõ ràng
-            now = datetime.now()
-            date_str = now.strftime("%Y_%m_%d")
-            time_str = now.strftime("%H%M%S")
-
-            # Thêm hostname vào tên file để tránh xung đột khi nhiều service cùng chạy
-            hostname = socket.gethostname()
-            hostname_short = hostname.split(".")[0]  # Lấy phần đầu tiên của hostname
-
-            file_name = f"{self.file_prefix}_{date_str}_{time_str}_{hostname_short}.{self.file_format}"
-
-            # Tạo đường dẫn đầy đủ
-            full_path = os.path.join(relative_path, file_name)
-
-            # Lưu dữ liệu
-            saved_path = self.storage.save_data(
-                data=buffer, file_name=full_path, file_format=self.file_format
+            # Xác định các loại BĐS cần flush
+            property_types_to_check = (
+                [specific_property_type]
+                if specific_property_type
+                else self.property_types
             )
 
-            if saved_path:
-                buffer_size_kb = len(buffer) * 1  # Ước tính mỗi bản ghi ~1KB
-                logger.info(
-                    f"Saved {len(buffer)} records (~{buffer_size_kb/1024:.2f}MB) from {source} to {saved_path}"
-                )
-                self.update_stats("successful", len(buffer))
-                self.data_buffers[source] = []  # Xóa buffer sau khi lưu
-                self.buffer_sizes[source] = 0
-                self.last_flush_time[source] = time.time()
+            for property_type in property_types_to_check:
+                if property_type not in self.data_buffers.get(source, {}):
+                    continue
 
-                # Commit offset chỉ khi lưu thành công
+                buffer = self.data_buffers[source][property_type]
+                if not buffer:
+                    continue
+
+                # Kiểm tra xem loại BĐS này có đủ điều kiện để flush không
+                should_flush_this_type = self.should_flush(source, property_type)
+
+                # Nếu không đủ điều kiện flush và không phải đang retry
+                if not should_flush_this_type and retry_count == 0:
+                    logger.debug(
+                        f"Skipping flush for {source}/{property_type}: not enough data yet"
+                    )
+                    continue
+
+                # Tạo đường dẫn phân cấp theo nguồn và loại bất động sản
+                now = datetime.now()
+                date_str = now.strftime("%Y_%m_%d")
+                time_str = now.strftime("%H%M%S")
+
+                # Tạo thư mục phân cấp theo năm/tháng/ngày
+                date_folder = now.strftime("%Y/%m")
+
+                # Xác định đường dẫn thư mục: raw/source/property_type/yyyy/mm/dd/
+                relative_path = f"raw/{source}/{property_type}/{date_folder}"
+
+                # Thêm hostname, microsecond và random UUID để đảm bảo tên file là duy nhất
+                hostname = socket.gethostname()
+                hostname_short = hostname.split(".")[0]
+                # unique_id = uuid.uuid4().hex[:8]
+
+                # Ưu tiên JSON cho dữ liệu thô
+                save_format = (
+                    "json" if self.storage_type == "hdfs" else self.file_format
+                )
+                file_name = f"{self.file_prefix}_{date_str}_{time_str}_{now.microsecond:06d}.{save_format}"
+
+                # Tạo đường dẫn đầy đủ
+                full_path = os.path.join(relative_path, file_name)
+
+                # Lưu dữ liệu cho loại bất động sản này
+                saved_path = self.storage.save_data(
+                    data=buffer, file_name=full_path, file_format=save_format
+                )
+
+                if saved_path:
+                    buffer_size_kb = len(buffer) * 1  # Ước tính mỗi bản ghi ~1KB
+                    logger.info(
+                        f"Saved {len(buffer)} records (~{buffer_size_kb/1024:.2f}MB) "
+                        f"from {source}/{property_type} to {saved_path}"
+                    )
+                    self.update_stats("successful", len(buffer))
+                    processed_items_count += len(buffer)
+                    processed_property_types.append(property_type)
+
+                    # Cập nhật thời gian flush cuối cùng
+                    if property_type in self.data_buffers[source]:
+                        # Xóa dữ liệu đã lưu thành công khỏi buffer
+                        self.data_buffers[source][property_type] = []
+                        self.last_flush_time[source][property_type] = time.time()
+                else:
+                    # Ghi log lỗi khi thất bại
+                    logger.error(
+                        f"Failed to save {len(buffer)} records for source {source}/{property_type}"
+                    )
+                    self.update_stats("failed", len(buffer))
+                    all_success = False
+
+            # Commit offset chỉ khi có bất kỳ dữ liệu nào được lưu thành công
+            if processed_property_types:
                 self.consumer.commit()
-                return True
-            else:
+                logger.info(
+                    f"Successfully processed and saved {processed_items_count} records from source {source} "
+                    f"for property types: {', '.join(processed_property_types)}"
+                )
+
+            # Xử lý nếu có lỗi xảy ra
+            if not all_success:
                 # Thử lại nếu chưa đạt số lần thử tối đa
                 if retry_count < self.max_retries:
                     retry_count += 1
                     retry_delay = self.retry_delay * retry_count  # Backoff tăng dần
                     logger.warning(
-                        f"Lưu dữ liệu thất bại, đang thử lại lần {retry_count}/{self.max_retries} sau {retry_delay} giây..."
+                        f"Lưu dữ liệu thất bại một phần, đang thử lại lần {retry_count}/{self.max_retries} sau {retry_delay} giây..."
                     )
                     time.sleep(retry_delay)
-                    return self.flush_buffer(source, retry_count)
-                else:
-                    # Lưu vào backup nếu đã thử hết số lần
-                    logger.error(
-                        f"Failed to save data from source {source} after {self.max_retries} attempts"
+                    return self.flush_buffer(
+                        source, specific_property_type, retry_count
                     )
-                    self._save_to_backup(source, buffer)
-                    self.update_stats("failed", len(buffer))
+                else:
+                    # Nếu đã thử hết số lần mà vẫn thất bại
+                    logger.error(
+                        f"Failed to save some data from source {source} after {self.max_retries} attempts"
+                    )
                     return False
+
+            return True
 
         except Exception as e:
             # Thử lại trong trường hợp lỗi nếu chưa đạt số lần thử tối đa
@@ -280,14 +297,12 @@ class StorageService(BaseService):
                     f"Error flushing buffer for source {source}: {e}. Retrying ({retry_count}/{self.max_retries}) after {retry_delay}s..."
                 )
                 time.sleep(retry_delay)
-                return self.flush_buffer(source, retry_count)
+                return self.flush_buffer(source, specific_property_type, retry_count)
             else:
-                # Lưu vào backup nếu đã thử hết số lần
+                # Ghi log lỗi khi thất bại sau khi thử lại
                 logger.error(
                     f"Error flushing buffer for source {source} after {self.max_retries} attempts: {e}"
                 )
-                self._save_to_backup(source, buffer)
-                self.update_stats("failed", len(buffer))
                 return False
 
     def process_message(self, message: Dict[str, Any]) -> bool:
@@ -304,22 +319,35 @@ class StorageService(BaseService):
             # Xác định nguồn dữ liệu từ message
             source = message.get("source", "unknown")
 
-            # Khởi tạo buffer cho nguồn nếu chưa có
+            # Thêm trường data_type nếu chưa có để phân loại
+            if "data_type" not in message:
+                message["data_type"] = get_property_type(message)
+
+            # Xác định loại bất động sản
+            property_type = get_property_type(message)
+
+            # Khởi tạo buffer cho nguồn và loại bất động sản nếu chưa có
             if source not in self.data_buffers:
-                self.data_buffers[source] = []
-                self.buffer_sizes[source] = 0
-                self.last_flush_time[source] = time.time()
+                self.data_buffers[source] = {}
+                self.last_flush_time[source] = {}
+
+            if property_type not in self.data_buffers[source]:
+                self.data_buffers[source][property_type] = []
+                self.last_flush_time[source][property_type] = time.time()
 
             # Thêm vào buffer tương ứng
-            self.data_buffers[source].append(message)
-            self.buffer_sizes[source] = len(self.data_buffers[source])
+            self.data_buffers[source][property_type].append(message)
             self.update_stats("processed")
 
             # Cập nhật thời gian nhận message
             self.last_message_time = time.time()
 
-            # Kiểm tra xem có nên flush không
-            if self.should_flush(source):
+            # Kiểm tra xem có nên flush cho loại BĐS này không
+            if self.should_flush(source, property_type):
+                return self.flush_buffer(source, property_type)
+
+            # Kiểm tra xem tổng hợp có nên flush không
+            elif self.should_flush(source):
                 return self.flush_buffer(source)
 
             return True
@@ -347,10 +375,6 @@ class StorageService(BaseService):
         else:
             logger.info(f"Storage Service started with {self.storage_type} storage")
 
-        # Xử lý các file backup trước khi bắt đầu tiêu thụ dữ liệu mới
-        if self.process_backup_on_startup:
-            self._process_backup_files()
-
         try:
             while self.running:
                 # Consume message từ Kafka
@@ -359,9 +383,15 @@ class StorageService(BaseService):
                 if message:
                     self.process_message(message)
                 else:
-                    # Nếu không có message mới, kiểm tra xem có nguồn nào cần flush không
+                    # Nếu không có message mới, kiểm tra các nguồn và loại BĐS có đủ điều kiện để flush không
                     for source in list(self.data_buffers.keys()):
-                        if self.should_flush(source) and self.data_buffers[source]:
+                        for property_type in self.property_types:
+                            if property_type in self.data_buffers.get(source, {}):
+                                if self.should_flush(source, property_type):
+                                    self.flush_buffer(source, property_type)
+
+                        # Kiểm tra cả tổng hợp
+                        if self.should_flush(source):
                             self.flush_buffer(source)
 
                     # Kiểm tra chế độ chạy một lần
@@ -398,37 +428,49 @@ class StorageService(BaseService):
 
     def _flush_all_buffers(self):
         """
-        Flush all data buffers for all sources.
-        This is used during shutdown to ensure all data is saved.
+        Flush all data buffers for all sources and property types.
+        This is used during shutdown to ensure all data is saved, regardless of buffer size or time criteria.
 
         Returns:
-            dict: Dictionary with source names as keys and boolean success status as values
+            dict: Dictionary with source and property type as keys and boolean success status as values
         """
         results = {}
         logger.info("Flushing all remaining data buffers before shutdown...")
 
         # Get a list of all sources with data in their buffers
-        sources_to_flush = [
-            source for source, buffer in self.data_buffers.items() if buffer
-        ]
+        for source, property_types in self.data_buffers.items():
+            source_results = {}
 
-        if not sources_to_flush:
-            logger.info("No data buffers to flush.")
-            return results
+            for property_type, buffer in property_types.items():
+                if not buffer:
+                    continue
 
-        for source in sources_to_flush:
-            logger.info(
-                f"Flushing buffer for source '{source}' with {len(self.data_buffers[source])} records"
-            )
-            success = self.flush_buffer(source)
-            results[source] = success
-
-            if success:
-                logger.info(f"Successfully flushed buffer for source '{source}'")
-            else:
-                logger.warning(
-                    f"Failed to flush buffer for source '{source}', data saved to backup"
+                logger.info(
+                    f"Flushing buffer for {source}/{property_type} with {len(buffer)} records"
                 )
+
+                # Add force=True to bypass the usual flush criteria check
+                # Initialize a timer to ensure unique filenames
+                time.sleep(0.001)  # Ensure microsecond uniqueness
+
+                # Unconditionally flush by forcing retry_count=1 which bypasses should_flush check
+                success = self.flush_buffer(source, property_type, retry_count=1)
+                source_results[property_type] = success
+
+                if success:
+                    logger.info(
+                        f"Successfully flushed buffer for {source}/{property_type}"
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to flush buffer for {source}/{property_type}"
+                    )
+
+            if source_results:
+                results[source] = source_results
+
+        if not results:
+            logger.info("No data buffers to flush.")
 
         return results
 
@@ -449,28 +491,6 @@ class StorageService(BaseService):
         logger.debug("Signal handlers registered for graceful shutdown")
 
 
-# filepath: /home/fer/data/real_estate_project/crawler/services/storage_service/main.py
-#
-# Storage Service: Lưu trữ dữ liệu bất động sản từ Kafka vào storage (HDFS hoặc local)
-#
-# Tính năng:
-# - Lưu dữ liệu vào HDFS hoặc local storage
-# - Buffer dữ liệu theo nguồn và định kỳ flush ra file
-# - Tự động chuyển đổi kiểu dữ liệu thành string để đảm bảo khả năng lưu trữ
-# - Backup dữ liệu khi flush thất bại để xử lý lại sau
-# - Tự động dừng sau thời gian không hoạt động (chế độ auto-stop)
-#   - Sử dụng cờ --once để kích hoạt chế độ dừng tự động
-#   - Sử dụng --idle-timeout để cài đặt thời gian chờ (mặc định 3600 giây)
-#
-# Chế độ auto-stop: Khi bật cờ --once, service sẽ tự động dừng sau khi không
-# nhận được message nào từ Kafka trong khoảng thời gian idle-timeout. Trước
-# khi dừng, service sẽ flush tất cả các buffer để đảm bảo dữ liệu được lưu đầy đủ.
-#
-# Ví dụ sử dụng:
-# python main.py --storage-type hdfs --once --idle-timeout 1800
-#
-
-
 def main():
     parser = argparse.ArgumentParser(description="Run Storage Service")
     parser.add_argument("--storage-type", type=str, help="Storage type (local, hdfs)")
@@ -487,14 +507,6 @@ def main():
     )
     parser.add_argument(
         "--retry-delay", type=int, help="Base delay between retries in seconds"
-    )
-    parser.add_argument(
-        "--process-backup",
-        type=str,
-        help="Process backup files on startup (true/false)",
-    )
-    parser.add_argument(
-        "--backup-dir", type=str, help="Directory to store backup files"
     )
     # Auto-stop mode configuration
     parser.add_argument(
@@ -530,10 +542,6 @@ def main():
         os.environ["MAX_RETRIES"] = str(args.max_retries)
     if args.retry_delay:
         os.environ["RETRY_DELAY"] = str(args.retry_delay)
-    if args.process_backup:
-        os.environ["PROCESS_BACKUP_ON_STARTUP"] = args.process_backup
-    if args.backup_dir:
-        os.environ["BACKUP_DIR"] = args.backup_dir
     if args.once:
         os.environ["RUN_ONCE_MODE"] = "true"
     # Since idle_timeout has a default value, we need to explicitly check if it was provided

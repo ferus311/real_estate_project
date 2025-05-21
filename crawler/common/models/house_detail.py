@@ -29,4 +29,5 @@ class HouseDetailItem:
 
     # Các trường khác nếu cần
     source: Optional[str] = None  # Để biết dữ liệu từ batdongsan hay chotot
-    posted_date: Optional[str] = None  # Ngày đăng tin theo giây epoch
+    posted_date: Optional[int] = None  # Ngày đăng tin theo giây epoch
+    data_type: Optional[str] = "house"

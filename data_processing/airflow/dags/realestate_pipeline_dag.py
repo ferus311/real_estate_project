@@ -39,10 +39,21 @@ check_services = BashOperator(
     dag=dag,
 )
 
-# Kích hoạt DAG crawler
-trigger_crawler = TriggerDagRunOperator(
-    task_id="trigger_crawler_dag",
-    trigger_dag_id="chotot_api_crawler",  # ID của DAG crawler - phải khớp với tên DAG thực tế
+# Kích hoạt DAG crawler API Chotot
+trigger_api_crawler = TriggerDagRunOperator(
+    task_id="trigger_api_crawler_dag",
+    trigger_dag_id="chotot_api_crawler",  # DAG API crawler của Chotot
+    wait_for_completion=True,  # Đợi crawler hoàn thành
+    poke_interval=30,  # Kiểm tra mỗi 30 giây
+    execution_date="{{ execution_date }}",
+    reset_dag_run=True,  # Reset nếu DAG đã tồn tại
+    dag=dag,
+)
+
+# Kích hoạt DAG crawler Playwright Batdongsan
+trigger_playwright_crawler = TriggerDagRunOperator(
+    task_id="trigger_playwright_crawler_dag",
+    trigger_dag_id="batdongsan_playwright_crawler",  # DAG Playwright crawler của Batdongsan
     wait_for_completion=True,  # Đợi crawler hoàn thành
     poke_interval=30,  # Kiểm tra mỗi 30 giây
     execution_date="{{ execution_date }}",
@@ -53,7 +64,7 @@ trigger_crawler = TriggerDagRunOperator(
 # Kích hoạt DAG storage
 trigger_storage = TriggerDagRunOperator(
     task_id="trigger_storage_dag",
-    trigger_dag_id="storage_service_hdfs_parquet",  # ID của DAG storage
+    trigger_dag_id="storage_service_hdfs_raw_json",  # ID của DAG storage
     wait_for_completion=True,  # Đợi storage hoàn thành
     poke_interval=30,  # Kiểm tra mỗi 30 giây
     execution_date="{{ execution_date }}",
@@ -67,9 +78,14 @@ verify_results = BashOperator(
     bash_command="""
     echo "Xác minh kết quả pipeline..."
 
-    # Kiểm tra số lượng file parquet trong HDFS
-    NUM_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate -name "*.parquet" | wc -l')
-    echo "Đã tìm thấy $NUM_FILES file parquet trong HDFS"
+    # Kiểm tra số lượng file JSON và parquet trong HDFS
+    JSON_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate -name "*.json" | wc -l')
+    PARQUET_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate -name "*.parquet" | wc -l')
+    TOTAL_FILES=$((JSON_FILES + PARQUET_FILES))
+
+    echo "Đã tìm thấy $JSON_FILES file JSON trong HDFS"
+    echo "Đã tìm thấy $PARQUET_FILES file parquet trong HDFS"
+    echo "Tổng số: $TOTAL_FILES files"
 
     # Log các thư mục để kiểm tra
     echo "Cấu trúc thư mục trong HDFS:"
@@ -81,4 +97,10 @@ verify_results = BashOperator(
 )
 
 # Định nghĩa luồng công việc
-check_services >> trigger_crawler >> trigger_storage >> verify_results
+# Chạy crawlers song song, sau đó storage, và cuối cùng là xác minh
+(
+    check_services
+    >> [trigger_api_crawler, trigger_playwright_crawler]
+    >> trigger_storage
+    >> verify_results
+)

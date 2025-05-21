@@ -56,6 +56,7 @@ class KafkaConsumer:
                 "group.id": group_id,
                 "auto.offset.reset": "earliest",
                 "enable.auto.commit": False,
+                "max.poll.interval.ms": 600000,
             }
         )
         self.consumer.subscribe(topics)

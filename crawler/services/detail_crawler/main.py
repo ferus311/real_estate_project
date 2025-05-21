@@ -37,6 +37,16 @@ class DetailCrawlerService(BaseService):
         self.crawler_type = os.environ.get("CRAWLER_TYPE", "default")
         self.output_topic = os.environ.get("OUTPUT_TOPIC", "property-data")
 
+        # Cấu hình cho chế độ run once
+        self.run_once_mode = os.environ.get("RUN_ONCE_MODE", "false").lower() == "true"
+        self.idle_timeout = int(os.environ.get("IDLE_TIMEOUT", "60"))  # 10 phút
+        self.last_message_time = time.time()
+        self.no_urls_from_kafka_count = 0
+        self.no_urls_timeout_checks = (
+            5  # Số lần kiểm tra liên tiếp không có URL mới từ Kafka
+        )
+        self.kafka_empty = False  # Flag để đánh dấu đã tiêu thụ hết dữ liệu từ Kafka
+
         # Kafka clients
         self.consumer = KafkaConsumer(
             ["property-urls"], group_id="detail-crawler-group"
@@ -178,6 +188,10 @@ class DetailCrawlerService(BaseService):
                 message = self.consumer.consume(timeout=1.0)
                 if message and "url" in message:
                     batch.append(message)
+                    # Reset biến đếm vì đã nhận được URL mới
+                    self.no_urls_from_kafka_count = 0
+                    self.last_message_time = time.time()
+                    self.kafka_empty = False
 
                     # Khi đủ batch hoặc gần đầy, gửi qua batch queue
                     if len(batch) >= self.batch_size:
@@ -197,6 +211,26 @@ class DetailCrawlerService(BaseService):
                             f"[Kafka] Committing offset due to time interval ({self.commit_interval}s)"
                         )
                         await self.commit_offset_safely()
+
+                    # Trong chế độ run_once, đánh dấu khi không nhận được URL mới từ Kafka
+                    if self.run_once_mode:
+                        self.no_urls_from_kafka_count += 1
+
+                        # Nếu không nhận được URL mới trong nhiều lần kiểm tra liên tiếp, đánh dấu Kafka empty
+                        if self.no_urls_from_kafka_count >= self.no_urls_timeout_checks:
+                            if not self.kafka_empty:
+                                logger.info(
+                                    f"No new URLs from Kafka after {self.no_urls_timeout_checks} checks. Marking Kafka queue as potentially empty."
+                                )
+                                self.kafka_empty = True
+
+                            # Kiểm tra xem tất cả URL đã được xử lý chưa
+                            if await self.check_all_urls_processed():
+                                logger.info(
+                                    "All work completed. Stopping Detail Crawler Service..."
+                                )
+                                self.running = False
+                                break
 
                     await asyncio.sleep(0.05)
             except Exception as e:
@@ -311,10 +345,68 @@ class DetailCrawlerService(BaseService):
             await asyncio.sleep(report_interval)
             self.report_stats()
 
+    async def check_all_urls_processed(self):
+        """
+        Kiểm tra xem tất cả các URL đã được xử lý hết chưa
+        Điều kiện:
+        1. Kafka: Không còn URL mới từ Kafka sau nhiều lần kiểm tra
+        2. Queue: Cả batch_queue và url_queue đều trống
+
+        Returns:
+            bool: True nếu tất cả URL đã được xử lý, False nếu chưa
+        """
+        if self.run_once_mode and self.kafka_empty:
+            # Kiểm tra xem các queue có trống không
+            if self.batch_queue.empty() and self.url_queue.empty():
+                # Đối với kafka_consumer: Đã đánh dấu là empty thông qua kafka_consumer_loop
+                # Đối với batch_processor: Queue đã trống
+                # Đối với worker: Không còn URL nào trong queue để xử lý
+
+                logger.info("All URLs have been processed. Ready to stop service.")
+                return True
+
+        return False
+
+    async def completion_check_loop(self):
+        """
+        Loop kiểm tra định kỳ xem tất cả công việc đã hoàn thành chưa.
+        Chỉ chạy trong chế độ run_once_mode.
+        """
+        check_interval = 5  # Kiểm tra mỗi 5 giây
+
+        if not self.run_once_mode:
+            return
+
+        logger.info("Starting completion check loop")
+
+        while self.running:
+            await asyncio.sleep(check_interval)
+
+            # Điều kiện dừng:
+            # 1. Đã đánh dấu Kafka là empty (không còn URL mới)
+            # 2. Các queue đều trống (tất cả URL đã được đưa vào xử lý)
+            # 3. Không còn URL nào đang được xử lý (tất cả worker đã hoàn thành)
+            if self.kafka_empty and self.batch_queue.empty() and self.url_queue.empty():
+                # Kiểm tra thêm xem đã đủ thời gian chờ chưa
+                if (
+                    time.time() - self.last_message_time
+                ) > self.idle_timeout / 10:  # Chờ 1/10 thời gian idle timeout
+                    logger.info(
+                        "All URLs have been processed and all queues are empty. Stopping service..."
+                    )
+                    self.running = False
+                    break
+
     async def run_async(self):
-        logger.info(
-            f"Service started with concurrency={self.max_concurrent}, batch_size={self.batch_size}, source={self.source}"
-        )
+        if self.run_once_mode:
+            logger.info(
+                f"Service started with concurrency={self.max_concurrent}, batch_size={self.batch_size}, source={self.source} in run-once mode"
+            )
+            logger.info(f"Will automatically stop after processing all URLs from Kafka")
+        else:
+            logger.info(
+                f"Service started with concurrency={self.max_concurrent}, batch_size={self.batch_size}, source={self.source}"
+            )
 
         # Start all the required tasks
         consumer_task = asyncio.create_task(self.kafka_consumer_loop())
@@ -328,6 +420,12 @@ class DetailCrawlerService(BaseService):
 
         # Gather all tasks
         all_tasks = [consumer_task, batch_processor_task, monitor_task] + workers
+
+        # Thêm task kiểm tra hoàn thành
+        if self.run_once_mode:
+            completion_check_task = asyncio.create_task(self.completion_check_loop())
+            all_tasks.append(completion_check_task)
+
         await asyncio.gather(*all_tasks)
 
     def run(self):
@@ -351,6 +449,31 @@ class DetailCrawlerService(BaseService):
 
 
 def main():
+    import argparse
+
+    # Xử lý tham số dòng lệnh
+    parser = argparse.ArgumentParser(description="Run Detail Crawler Service")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run once mode: stop service after processing all URLs",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=600,
+        help="Time in seconds to determine if Kafka is empty (default: 600)",
+    )
+
+    args = parser.parse_args()
+
+    # Ghi đè biến môi trường từ tham số dòng lệnh
+    if args.once:
+        os.environ["RUN_ONCE_MODE"] = "true"
+    if args.idle_timeout:
+        os.environ["IDLE_TIMEOUT"] = str(args.idle_timeout)
+
+    # Khởi tạo và chạy service
     DetailCrawlerService().run()
 
 

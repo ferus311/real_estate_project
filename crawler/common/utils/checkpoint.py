@@ -35,8 +35,16 @@ def save_checkpoint_with_timestamp(file_path, page_number, success=True):
 
 def load_checkpoint(file_path):
     if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            return json.load(f)
+        try:
+            with open(file_path, "r") as f:
+                content = f.read().strip()
+                if not content:
+                    # File rỗng -> trả về dict rỗng
+                    return {}
+                return json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            # File không phải JSON hợp lệ -> trả về dict rỗng
+            return {}
     return {}
 
 

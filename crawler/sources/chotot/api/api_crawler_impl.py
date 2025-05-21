@@ -155,7 +155,7 @@ class ChototApiCrawler(BaseApiCrawler):
 
             # Tạo URL cho tin đăng nếu chưa có
             if not url:
-                url = f"https://gateway.chotot.com/v1/public/ad-listing/{listing_id}"
+                url = f"https://nha.chotot.com/{listing_id}.htm"
 
             # Tạo thông tin người bán
             seller_info = {
@@ -194,14 +194,16 @@ class ChototApiCrawler(BaseApiCrawler):
                 seller_info=seller_info,
                 # Nguồn dữ liệu
                 source="chotot",
-                posted_date=int(
-                    ad_data.get("list_time", "") / 1000
-                ),  # Chuyển đổi sang giây epoch
+                posted_date=int(ad_data.get("list_time", "") / 1000),
             )
             # Chuyển đổi HouseDetailItem thành Dictionary
             result = self._house_detail_to_dict(house_detail)
 
             # Thêm một số thông tin không có trong model
+            result["house_type"] = str(ad_data.get("house_type", ""))
+            result["living_size"] = str(ad_data.get("living_size", ""))
+            result["width"] = str(ad_data.get("width", ""))
+            result["length"] = str(ad_data.get("length", ""))
             result["url"] = url
 
             return result

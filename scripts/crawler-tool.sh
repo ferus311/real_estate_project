@@ -53,8 +53,21 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
+mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
+
+
+sudo mkdir -p /crawler/checkpoint
+
+
+if ! grep -qs ${PROJECT_DIR}/docker/volumes/crawler/checkpoint /proc/mounts; then
+    echo "Mounting..."
+    sudo mount --bind /crawler/checkpoint ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
+else
+    echo "Already mounted"
+fi
+
 
 # Kiểm tra xem các networks đã tồn tại chưa
 echo -e "${BLUE}[INFO]${NC} Kiểm tra và tạo Docker networks..."
@@ -100,9 +113,9 @@ check_error "Không thể khởi động Airflow"
 wait_for_service "Airflow webserver" "8080" "localhost" 180
 
 # Khởi động crawler shell
-echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
-docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml up -d crawler-shell
-check_error "Không thể khởi động crawler shell"
+# echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
+# docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml up -d crawler-shell
+# check_error "Không thể khởi động crawler shell"
 
 echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
 echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"

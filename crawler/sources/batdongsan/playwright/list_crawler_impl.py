@@ -2,6 +2,8 @@ import asyncio
 import random
 from typing import List, Optional, Callable, Dict, Any
 from playwright.async_api import async_playwright
+from playwright._impl._errors import TargetClosedError
+
 
 from common.base.base_list_crawler import BaseListCrawler
 from common.utils.checkpoint import (
@@ -74,6 +76,21 @@ class BatdongsanListCrawler(BaseListCrawler):
             )
             return []
 
+        async def handle_abort(route):
+            try:
+                await route.abort()
+            except TargetClosedError:
+                pass  # Page đã đóng, bỏ qua
+
+        async def handle_route(route):
+            try:
+                if route.request.resource_type in ["image", "stylesheet", "font"]:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except TargetClosedError:
+                pass  # Page đã đóng, bỏ qua
+
         while retries > 0:
             browser = None
             try:
@@ -102,22 +119,11 @@ class BatdongsanListCrawler(BaseListCrawler):
                     # Đảm bảo kết nối online
                     await page.context.set_offline(False)
 
-                    # Chỉ chặn các định dạng tài nguyên không cần thiết để cải thiện hiệu suất
                     await page.route(
                         "**/*.{png,jpg,jpeg,webp,svg,gif,css,woff,woff2,ttf,otf}",
-                        lambda route: route.abort(),
+                        handle_abort,
                     )
-
-                    # Cho phép tất cả các request khác đi qua mà không cần options
-                    await page.route(
-                        "**/*",
-                        lambda route: (
-                            route.continue_()
-                            if not route.request.resource_type
-                            in ["image", "stylesheet", "font"]
-                            else route.abort()
-                        ),
-                    )
+                    await page.route("**/*", handle_route)
 
                     url = f"https://batdongsan.com.vn/nha-dat-ban/p{page_number}?cIds=163"
                     print(f"[Batdongsan List] Crawling page {page_number}: {url}")
@@ -143,6 +149,8 @@ class BatdongsanListCrawler(BaseListCrawler):
                     # Lấy HTML kể cả khi có lỗi điều hướng
                     html = await page.content()
                     listings = extract_list_items(html)
+                    
+                    await page.unroute_all(behavior="ignoreErrors")
 
                     if not listings:
                         print(f"[Batdongsan List] Page {page_number} - No data found")

@@ -68,30 +68,17 @@ services:
             - BATCH_SIZE=100
             - FLUSH_INTERVAL=300
 
-    # Retry Service - Xử lý các URL thất bại
-    # retry-service:
+    # Dev Shell Service - Cho phép truy cập shell để chạy lệnh thủ công
+    # crawler-shell:
     #     <<: *crawler-common
     #     build:
     #         context: ../../crawler
-    #     image: crawler-retry:latest
-    #     container_name: retry-service
-    #     command: ['python', '-m', 'services.retry_service.main']
-    #     environment:
-    #         - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-    #         - MAX_RETRIES=3
-    #         - RETRY_DELAY=3600
-
-    # Dev Shell Service - Cho phép truy cập shell để chạy lệnh thủ công
-    crawler-shell:
-        <<: *crawler-common
-        build:
-            context: ../../crawler
-        # image: crawler-shell:latest
-        container_name: crawler-shell
-        entrypoint: ['/bin/bash']
-        tty: true
-        volumes:
-            - ../../crawler:/app/crawler
+    #     # image: crawler-shell:latest
+    #     container_name: crawler-shell
+    #     entrypoint: ['/bin/bash']
+    #     tty: true
+    #     volumes:
+    #         - ../../crawler:/app/crawler
 
 networks:
     hdfs_network:

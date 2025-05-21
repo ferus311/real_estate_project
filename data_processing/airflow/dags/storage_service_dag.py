@@ -14,25 +14,15 @@ default_args = {
 }
 
 dag = DAG(
-    "storage_service_hdfs_parquet",
+    "storage_service_hdfs_json_raw",
     default_args=default_args,
-    description="DAG to run storage service to save data in Parquet format to HDFS after crawler completes",
+    description="DAG to run storage service to save raw data in JSON format to HDFS after crawler completes",
     schedule_interval=None,  # Can be set to '@daily' or other schedule if needed
     start_date=days_ago(1),
-    tags=["storage", "hdfs", "parquet"],
+    tags=["storage", "hdfs", "json", "raw-data"],
 )
 
-# Wait for the crawler DAG to complete
-wait_for_crawler = ExternalTaskSensor(
-    task_id="wait_for_crawler",
-    external_dag_id="chotot_api_crawler",  # The ID of the crawler DAG - match exactly with the crawler DAG ID
-    external_task_id="run_chotot_api_crawler",  # The last task of the crawler DAG
-    timeout=600,  # 10 minutes timeout
-    mode="reschedule",  # Reschedule if not found
-    allowed_states=["success"],  # Only proceed if the task succeeded
-    execution_delta=timedelta(minutes=0),  # Look for same execution date
-    dag=dag,
-)
+
 
 # Check Kafka and HDFS connectivity
 check_connectivity = BashOperator(
@@ -51,30 +41,29 @@ check_connectivity = BashOperator(
     dag=dag,
 )
 
-# Run storage service to process data from Kafka and save to HDFS in Parquet format
+# Run storage service to process data from Kafka and save to HDFS in JSON format (for raw data)
 run_storage_service = DockerOperator(
-    task_id="run_storage_service_hdfs_parquet",
+    task_id="run_storage_service_hdfs_json_raw",
     image="crawler-storage:latest",
-    command="python -m services.storage_service.main",
+    command="python -m services.storage_service.main --once",
     auto_remove=True,
-    network_mode="hdfs_network", # Use the same network as Kafka and HDFS
+    network_mode="hdfs_network",  # Use the same network as Kafka and HDFS
     environment={
         "KAFKA_BOOTSTRAP_SERVERS": "kafka1:19092",
         "KAFKA_TOPIC": "property-data",  # Topic with property data from crawler
         "KAFKA_GROUP_ID": "storage-service-airflow",
         "HDFS_NAMENODE": "namenode:9870",
         "HDFS_USER": "airflow",
-        "HDFS_BASE_PATH": "/data/realestate",
         "STORAGE_TYPE": "hdfs",
-        "FILE_FORMAT": "parquet",
-        "BATCH_SIZE": "20000",  # Process 1000 records at a time
-        "FLUSH_INTERVAL": "120",  # Flush every 1 minute if batch size not reached
+        "FILE_FORMAT": "json",  # Prioritize JSON for raw data storage
+        "BATCH_SIZE": "20000",  # Process 20000 records at a time
+        "FLUSH_INTERVAL": "120",  # Flush every 2 minutes if batch size not reached
         "MIN_FILE_SIZE_MB": "5",  # Minimum file size for efficient HDFS storage
         "MAX_FILE_SIZE_MB": "128",  # Maximum file size for manageability
-        "MAX_RETRIES": "3",
-        "RETRY_DELAY": "5",
         "FILE_PREFIX": "property_data",
         "PROCESS_BACKUP_ON_STARTUP": "False",
+        "RUN_ONCE_MODE": "true",  # Enable auto-stop mode to terminate after processing available messages
+        "IDLE_TIMEOUT": "60",  # Wait for 10 minutes without messages before stopping (tune as needed)
     },
     docker_url="unix://var/run/docker.sock",
     mounts=[],  # No volume mounts needed as per optimization requirements
@@ -87,14 +76,18 @@ verify_hdfs_data = BashOperator(
     bash_command="""
     echo "Verifying data in HDFS..."
     # Check if files were created
-    docker exec namenode bash -c 'hdfs dfs -ls /data/realestate/chotot' || echo "Warning: No data found in HDFS for chotot source"
+    docker exec namenode bash -c 'hdfs dfs -ls /data/realestate/raw' || echo "Warning: No data found in HDFS raw directory"
 
-    # Count the number of parquet files
-    NUM_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate -name "*.parquet" | wc -l')
-    echo "Found $NUM_FILES parquet files in HDFS"
+    # Count the number of JSON files (for raw data)
+    JSON_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate/raw -name "*.json" | wc -l')
+    echo "Found $JSON_FILES JSON files in HDFS raw directory"
 
-    if [ "$NUM_FILES" -eq "0" ]; then
-        echo "Warning: No parquet files found. Storage service may have failed."
+    # Count the number of parquet files (for processed data)
+    PARQUET_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate -name "*.parquet" | wc -l')
+    echo "Found $PARQUET_FILES Parquet files in HDFS"
+
+    if [ "$JSON_FILES" -eq "0" ]; then
+        echo "Warning: No JSON files found in raw directory. Raw data storage may have failed."
         # Exit with a warning rather than error for better debugging
         # exit 1
     fi

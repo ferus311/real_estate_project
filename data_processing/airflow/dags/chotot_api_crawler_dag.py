@@ -3,6 +3,8 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.providers.docker.operators.docker import DockerOperator
 from airflow.utils.dates import days_ago
+from docker.types import Mount
+
 
 default_args = {
     "owner": "airflow",
@@ -40,14 +42,15 @@ run_crawler = DockerOperator(
     environment={
         "SOURCE": "chotot",
         "START_PAGE": "1",
-        "END_PAGE": "3",
+        "END_PAGE": "500",
         "OUTPUT_TOPIC": "property-data",
         "MAX_CONCURRENT": "5",
         "STOP_ON_EMPTY": "true",
         "MAX_EMPTY_PAGES": "5",
         "KAFKA_BOOTSTRAP_SERVERS": "kafka1:19092",
-        "HDFS_NAMENODE": "namenode:9000",
     },
+    mount_tmp_dir=False,
+    mounts=[Mount(source="/crawler/checkpoint", target="/app/checkpoint", type="bind")],
     docker_url="unix://var/run/docker.sock",
     dag=dag,
 )

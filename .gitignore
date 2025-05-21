@@ -5,4 +5,5 @@
 **/volumes/postgres/
 **/volumes/kafka/
 **/volumes/zookeeper/
+**/volumes/crawler/
 **/venv/

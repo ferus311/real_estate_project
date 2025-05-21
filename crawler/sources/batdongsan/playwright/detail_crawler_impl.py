@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List, Callable
 from urllib.parse import urlparse
 from datetime import datetime
 from playwright.async_api import async_playwright
+from playwright._impl._errors import TargetClosedError
 
 from common.base.base_detail_crawler import BaseDetailCrawler
 from common.utils.checkpoint import load_checkpoint, save_checkpoint
@@ -37,10 +38,27 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
         except Exception:
             return None
 
+
+
     async def crawl_detail(self, url: str) -> Optional[Dict[str, Any]]:
         """Crawl chi tiết một tin đăng bất động sản từ URL"""
         post_id = self._extract_post_id(url)
         retries = self.max_retries
+
+        async def handle_abort(route):
+            try:
+                await route.abort()
+            except TargetClosedError:
+                pass  # Page đã đóng, bỏ qua
+
+        async def handle_route(route):
+            try:
+                if route.request.resource_type in ["image", "stylesheet", "font"]:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except TargetClosedError:
+                pass  # Page đã đóng, bỏ qua
 
         # Kiểm tra checkpoint nếu có post_id
         if post_id:
@@ -48,6 +66,7 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
             if post_id in checkpoint and checkpoint[post_id]:
                 print(f"[Batdongsan Detail] Post {post_id} already crawled")
                 return {"skipped": True, "url": url}
+
 
         while retries > 0:
             browser = None
@@ -77,22 +96,12 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
                     # Đảm bảo kết nối online
                     await page.context.set_offline(False)
 
-                    # Chỉ chặn các định dạng tài nguyên không cần thiết để cải thiện hiệu suất
                     await page.route(
                         "**/*.{png,jpg,jpeg,webp,svg,gif,css,woff,woff2,ttf,otf}",
-                        lambda route: route.abort(),
+                        handle_abort,
                     )
+                    await page.route("**/*", handle_route)
 
-                    # Cho phép tất cả các request khác đi qua mà không cần options
-                    await page.route(
-                        "**/*",
-                        lambda route: (
-                            route.continue_()
-                            if not route.request.resource_type
-                            in ["image", "stylesheet", "font"]
-                            else route.abort()
-                        ),
-                    )
                     print(f"[Batdongsan Detail] Crawling {url}")
 
                     try:
@@ -120,6 +129,7 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
 
                     html = await page.content()
                     detail_info = extract_detail_info(html)
+                    await page.unroute_all(behavior="ignoreErrors")
 
                     if not detail_info:
                         print(f"[Batdongsan Detail] No data extracted from {url}")
