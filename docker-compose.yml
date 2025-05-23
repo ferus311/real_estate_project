@@ -14,15 +14,15 @@ services:
       file: ./docker/yml/hdfs.yml
       service: datanode1
 
-  datanode2:
-    extends:
-      file: ./docker/yml/hdfs.yml
-      service: datanode2
+  # datanode2:
+  #   extends:
+  #     file: ./docker/yml/hdfs.yml
+  #     service: datanode2
 
-  datanode3:
-    extends:
-      file: ./docker/yml/hdfs.yml
-      service: datanode3
+  # datanode3:
+  #   extends:
+  #     file: ./docker/yml/hdfs.yml
+  #     service: datanode3
 
   resourcemanager:
     extends:

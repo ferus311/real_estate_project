@@ -9,12 +9,10 @@ echo "Thời gian bắt đầu: $(date)"
 
 # Danh sách các thư mục cần thiết
 dirs=(
-  "docker/volumes/kafka"
-  "docker/volumes/zookeeper"
   "docker/volumes/hdfs/namenode"
   "docker/volumes/hdfs/datanode1"
-  "docker/volumes/hdfs/datanode2"
-  "docker/volumes/hdfs/datanode3"
+#   "docker/volumes/hdfs/datanode2"
+#   "docker/volumes/hdfs/datanode3"
   "data_processing/airflow/dags"
   "data_processing/airflow/logs"
   "data_processing/airflow/plugins"
@@ -109,10 +107,10 @@ else
 fi
 
 # 5. Khởi động các crawler service
-echo "===== KHỞI ĐỘNG CRAWLER SERVICES ====="
-docker compose -f yml/crawler.yml up -d
-echo "Đợi các crawler service khởi động hoàn tất..."
-sleep 5
+# echo "===== KHỞI ĐỘNG CRAWLER SERVICES ====="
+# docker compose -f yml/crawler.yml up -d
+# echo "Đợi các crawler service khởi động hoàn tất..."
+# sleep 5
 
 # Kiểm tra các dịch vụ chính đã hoạt động chưa
 echo "===== KIỂM TRA TRẠNG THÁI DỊCH VỤ ====="

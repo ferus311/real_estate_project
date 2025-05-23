@@ -3,47 +3,23 @@ hdfs://namenode:9870/data/realestate/
 ├── raw/ # Dữ liệu thô từ các nguồn (định dạng JSON ưu tiên)
 │ ├── batdongsan/
 │ │ ├── house/ # Nhà ở
-│ │ │ └── yyyy/mm/dd/ # Phân vùng theo ngày để tối ưu lưu trữ
-│ │ ├── apartment/ # Chung cư
-│ │ │ └── yyyy/mm/dd/
-│ │ ├── land/ # Đất
-│ │ │ └── yyyy/mm/dd/
-│ │ ├── commercial/ # Bất động sản thương mại
-│ │ │ └── yyyy/mm/dd/
+│ │ │ └── yyyy/mm/ # Phân vùng theo ngày để tối ưu lưu trữ
 │ │ └── other/ # Các loại khác
-│ │ └── yyyy/mm/dd/
+│ │ └── yyyy/mm/
 │ └── chotot/
 │ ├── house/ # Nhà ở
-│ │ └── yyyy/mm/dd/
-│ ├── apartment/ # Chung cư
-│ │ └── yyyy/mm/dd/
-│ ├── land/ # Đất
-│ │ └── yyyy/mm/dd/
-│ ├── commercial/ # Bất động sản thương mại
-│ │ └── yyyy/mm/dd/
+│ │ └── yyyy/mm/
 │ └── other/ # Các loại khác
-│ └── yyyy/mm/dd/
+│ └── yyyy/mm/
 │
 ├── processed/ # Dữ liệu đã xử lý (định dạng Parquet)
 │ ├── cleaned/ # Dữ liệu đã làm sạch
 │ │ ├── house/ # Nhà ở
 │ │ │ └── yyyy/mm/
-│ │ ├── apartment/ # Chung cư
-│ │ │ └── yyyy/mm/
-│ │ ├── land/ # Đất
-│ │ │ └── yyyy/mm/
-│ │ ├── commercial/ # Bất động sản thương mại
-│ │ │ └── yyyy/mm/
 │ │ └── all/ # Tất cả các loại
 │ │ └── yyyy/mm/
 │ ├── integrated/ # Dữ liệu đã tích hợp từ nhiều nguồn
 │ │ ├── house/ # Nhà ở
-│ │ │ └── yyyy/mm/
-│ │ ├── apartment/ # Chung cư
-│ │ │ └── yyyy/mm/
-│ │ ├── land/ # Đất
-│ │ │ └── yyyy/mm/
-│ │ ├── commercial/ # Bất động sản thương mại
 │ │ │ └── yyyy/mm/
 │ │ └── all/ # Tất cả các loại
 │ │ └── yyyy/mm/
@@ -67,15 +43,9 @@ hdfs://namenode:9870/data/realestate/
 ├── ml/ # Dữ liệu và mô hình ML (định dạng Parquet)
 │ ├── features/ # Đặc trưng cho ML
 │ │ ├── house/yyyy/mm/
-│ │ ├── apartment/yyyy/mm/
-│ │ ├── land/yyyy/mm/
-│ │ ├── commercial/yyyy/mm/
 │ │ └── all/yyyy/mm/
 │ ├── training/ # Dữ liệu huấn luyện
 │ │ ├── house/yyyy/mm/
-│ │ ├── apartment/yyyy/mm/
-│ │ ├── land/yyyy/mm/
-│ │ ├── commercial/yyyy/mm/
 │ │ └── all/yyyy/mm/
 │ ├── models/ # Các phiên bản mô hình
 │ │ ├── house/
@@ -122,7 +92,7 @@ Dữ liệu được lưu trữ trên HDFS với cấu trúc phân cấp theo ng
 
 ### Đặc điểm của lưu trữ HDFS
 
-1. **Phân vùng theo thời gian**: Dữ liệu được phân tổ chức theo năm/tháng/ngày để dễ dàng quản lý và truy vấn
+1. **Phân vùng theo thời gian**: Dữ liệu được phân tổ chức theo năm/tháng để dễ dàng quản lý và truy vấn
 2. **Định dạng Parquet**: Sử dụng định dạng cột để tối ưu hiệu suất đọc và tiết kiệm không gian
 3. **Metadata phong phú**: Lưu thông tin về nguồn, thời gian thu thập, và các thuộc tính khác
 

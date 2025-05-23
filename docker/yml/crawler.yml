@@ -1,4 +1,3 @@
-# Cấu hình chung cho các services
 x-crawler-common: &crawler-common
     restart: unless-stopped
     networks:

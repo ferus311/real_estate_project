@@ -42,7 +42,7 @@ run_crawler = DockerOperator(
     environment={
         "SOURCE": "chotot",
         "START_PAGE": "1",
-        "END_PAGE": "500",
+        "END_PAGE": "300",
         "OUTPUT_TOPIC": "property-data",
         "MAX_CONCURRENT": "5",
         "STOP_ON_EMPTY": "true",

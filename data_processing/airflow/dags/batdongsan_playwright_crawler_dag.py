@@ -42,13 +42,14 @@ run_list_crawler = DockerOperator(
         "SOURCE": "batdongsan",
         "CRAWLER_TYPE": "playwright",
         "START_PAGE": "1",
-        "END_PAGE": "500",
+        "END_PAGE": "200",
         "OUTPUT_TOPIC": "property-urls",
         "MAX_CONCURRENT": "10",
         "STOP_ON_EMPTY": "true",
         "MAX_EMPTY_PAGES": "5",
         "KAFKA_BOOTSTRAP_SERVERS": "kafka1:19092",
         "HDFS_NAMENODE": "namenode:9870",
+        "FORCE_CRAWL_INTERVAL_HOURS": "6"
     },
     mount_tmp_dir=False,
     mounts=[

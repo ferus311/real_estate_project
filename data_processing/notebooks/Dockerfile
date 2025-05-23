@@ -4,13 +4,18 @@ LABEL maintainer="Real Estate Data Team"
 
 USER root
 
-# Cài đặt các dependencies hệ thống
+# Cài đặt Java và các dependencies hệ thống
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-11-jdk \
     libsnappy-dev \
     libatlas-base-dev \
     graphviz \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Thiết lập JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
 
 # Cài đặt các thư viện Python cần thiết
 RUN pip install --no-cache-dir \
@@ -41,18 +46,16 @@ RUN mkdir -p /home/jovyan/.local/share/jupyter/runtime && \
 RUN jupyter contrib nbextension install --user && \
     jupyter nbextension enable toc2/main
 
-# Set up PySpark driver configuration
+# Cấu hình mặc định cho PySpark (nếu chạy local)
 ENV PYSPARK_DRIVER_PYTHON=jupyter
 ENV PYSPARK_DRIVER_PYTHON_OPTS='notebook --no-browser --port=8888 --ip=0.0.0.0 --allow-root'
 
-# Create directories for work
+# Thư mục làm việc
 RUN mkdir -p /home/jovyan/work/data
-
-# Set working directory
 WORKDIR /home/jovyan/work
 
-# Expose port for Jupyter
+# Mở cổng notebook
 EXPOSE 8888
 
-# Default command
+# Lệnh mặc định
 CMD ["start-notebook.sh", "--NotebookApp.token=''", "--NotebookApp.password=''"]

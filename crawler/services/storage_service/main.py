@@ -211,7 +211,7 @@ class StorageService(BaseService):
                 time_str = now.strftime("%H%M%S")
 
                 # Tạo thư mục phân cấp theo năm/tháng/ngày
-                date_folder = now.strftime("%Y/%m")
+                date_folder = now.strftime("%Y/%m/%d")
 
                 # Xác định đường dẫn thư mục: raw/source/property_type/yyyy/mm/dd/
                 relative_path = f"raw/{source}/{property_type}/{date_folder}"
