@@ -35,14 +35,14 @@ check_kafka = BashOperator(
 
 run_crawler = DockerOperator(
     task_id="run_chotot_api_crawler",
-    image="crawler-api:latest",
+    image="realestate-crawler:latest",
     command="python -m services.api_crawler.main --once",
     auto_remove=True,
     network_mode="hdfs_network",
     environment={
         "SOURCE": "chotot",
         "START_PAGE": "1",
-        "END_PAGE": "300",
+        "END_PAGE": "200",
         "OUTPUT_TOPIC": "property-data",
         "MAX_CONCURRENT": "5",
         "STOP_ON_EMPTY": "true",

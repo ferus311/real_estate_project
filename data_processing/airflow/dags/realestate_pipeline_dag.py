@@ -100,7 +100,7 @@ verify_results = BashOperator(
 # Chạy crawlers song song, sau đó storage, và cuối cùng là xác minh
 (
     check_services
-    >> [trigger_api_crawler, trigger_playwright_crawler]
+    >> [ trigger_playwright_crawler]
     >> trigger_storage
     >> verify_results
 )

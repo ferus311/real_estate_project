@@ -44,7 +44,7 @@ check_connectivity = BashOperator(
 # Run storage service to process data from Kafka and save to HDFS in JSON format (for raw data)
 run_storage_service = DockerOperator(
     task_id="run_storage_service_hdfs_json_raw",
-    image="crawler-storage:latest",
+    image="realestate-crawler:latest",
     command="python -m services.storage_service.main --once",
     auto_remove=True,
     network_mode="hdfs_network",  # Use the same network as Kafka and HDFS

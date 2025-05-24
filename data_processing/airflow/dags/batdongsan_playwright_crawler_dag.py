@@ -34,7 +34,7 @@ check_kafka = BashOperator(
 
 run_list_crawler = DockerOperator(
     task_id="run_batdongsan_playwright_list_crawler",
-    image="crawler-list:latest",
+    image="realestate-crawler:latest",
     command="python -m services.list_crawler.main --once --force-crawl",
     auto_remove=True,
     network_mode="hdfs_network",
@@ -42,7 +42,7 @@ run_list_crawler = DockerOperator(
         "SOURCE": "batdongsan",
         "CRAWLER_TYPE": "playwright",
         "START_PAGE": "1",
-        "END_PAGE": "200",
+        "END_PAGE": "1000",
         "OUTPUT_TOPIC": "property-urls",
         "MAX_CONCURRENT": "10",
         "STOP_ON_EMPTY": "true",
@@ -69,7 +69,7 @@ check_list_logs = BashOperator(
 
 run_detail_crawler = DockerOperator(
     task_id="run_batdongsan_playwright_detail_crawler",
-    image="crawler-detail:latest",
+    image="realestate-crawler:latest",
     command="python -m services.detail_crawler.main --once",
     auto_remove=True,
     network_mode="hdfs_network",

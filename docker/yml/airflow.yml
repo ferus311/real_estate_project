@@ -15,7 +15,8 @@ x-airflow-common: &airflow-common
         - ../../crawler:/opt/airflow/crawler
         - ../../data_processing:/opt/airflow/data_processing
         - /var/run/docker.sock:/var/run/docker.sock
-    user: '0:0'
+    # user: "${AIRFLOW_UID:-50000}:0"
+    user: "0:0"
     networks:
         - hdfs_network
         - airflow_network
