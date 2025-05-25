@@ -19,15 +19,25 @@ def create_spark_session(app_name, master="spark://spark-master:7077", config=No
     """
     builder = SparkSession.builder.appName(app_name).master(master)
 
-    # Cấu hình cơ bản
+    # Cấu hình cơ bản tối ưu cho real estate data processing
     builder = (
         builder.config("spark.driver.memory", "2g")
         .config("spark.executor.memory", "4g")
         .config("spark.executor.cores", "2")
-        .config("spark.sql.shuffle.partitions", "100")
+        .config(
+            "spark.sql.shuffle.partitions", "50"
+        )  # Giảm từ 100 để phù hợp data size
         .config("spark.speculation", "true")
+        .config("spark.sql.adaptive.enabled", "true")  # Adaptive Query Execution
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.sql.adaptive.skewJoin.enabled", "true")
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         # Cấu hình cho HDFS
         .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
+        .config("spark.hadoop.mapreduce.fileoutputcommitter.algorithm.version", "2")
+        # Cấu hình memory cho large datasets
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true")
+        .config("spark.sql.execution.arrow.maxRecordsPerBatch", "10000")
     )
 
     # Cấu hình cho Delta Lake - Tạm thời vô hiệu hóa để tránh lỗi khi không có thư viện

@@ -53,7 +53,7 @@ def extract_chotot_data(
         "/data/realestate/raw", "chotot", property_type, input_date
     )
     bronze_path = get_hdfs_path(
-        "/data/realestate/processed/cleaned", property_type, input_date
+        "/data/realestate/processed/bronze", "chotot", property_type, input_date
     )
 
     logger.logger.info(f"Đọc dữ liệu từ: {raw_data_path}")
@@ -74,9 +74,11 @@ def extract_chotot_data(
         raw_df = spark.read.schema(schema).json(raw_data_path)
 
         # Thêm các trường metadata
-        augmented_df = raw_df.withColumn(
-            "processing_date", current_timestamp()
-        ).withColumn("processing_id", lit(processing_id))
+        augmented_df = (
+            raw_df.withColumn("processing_date", current_timestamp())
+            .withColumn("processing_id", lit(processing_id))
+            .withColumn("data_source", lit("chotot"))  # Add data source identifier
+        )
 
         # Log thông tin cơ bản
         logger.log_dataframe_info(augmented_df, "raw_data")

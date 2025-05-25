@@ -72,7 +72,7 @@ def get_chotot_processed_schema():
             StructField("posted_date", TimestampType(), True),
             StructField("price", DoubleType(), True),
             StructField("price_per_m2", DoubleType(), True),
-            StructField("seller_info", StringType(), True),
+            # StructField("seller_info", StringType(), True),
             StructField("source", StringType(), True),
             StructField("title", StringType(), True),
             StructField("url", StringType(), True),
