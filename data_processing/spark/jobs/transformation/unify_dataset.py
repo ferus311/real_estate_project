@@ -16,6 +16,7 @@ from pyspark.sql.functions import (
     lower,
     element_at,
     split,
+    size,
 )
 import sys
 import os
@@ -119,12 +120,40 @@ def unify_property_data(
         # Tạo ID duy nhất và chuẩn hóa schema cho mỗi DataFrame trước khi hợp nhất
         normalized_dfs = []
         for i, df in enumerate(data_sources):
-            # Tạo ID duy nhất dựa trên url và source
-            df = df.withColumn("id", md5(concat(col("url"), col("source"))))
+            # Determine source name from actual data (now using 'source' field)
+            source_name = "unknown"
+            if "source" in df.columns:
+                source_sample = df.select("source").limit(1).collect()
+                if source_sample and source_sample[0]["source"]:
+                    source_name = source_sample[0]["source"]
+            elif "data_source" in df.columns:
+                # Fallback to old field name if still exists
+                source_sample = df.select("data_source").limit(1).collect()
+                if source_sample and source_sample[0]["data_source"]:
+                    source_name = source_sample[0]["data_source"]
+                # Rename the field for consistency
+                df = df.withColumnRenamed("data_source", "source")
 
-            # Chuẩn hóa DataFrame theo schema thống nhất
+            logger.logger.info(f"Processing source: {source_name}")
+
+            # Tạo ID duy nhất dựa trên url và source (handle missing fields gracefully)
+            if "url" in df.columns and "source" in df.columns:
+                df = df.withColumn("id", md5(concat(col("url"), col("source"))))
+            elif "url" in df.columns:
+                df = df.withColumn("id", md5(col("url")))
+            else:
+                # Fallback to generated ID if no URL
+                df = df.withColumn(
+                    "id",
+                    md5(
+                        concat(
+                            lit(source_name),
+                            monotonically_increasing_id().cast("string"),
+                        )
+                    ),
+                )
+
             # Log thông tin về schema của nguồn dữ liệu
-            source_name = f"source_{i}" if i < len(data_sources) else "unknown"
             logger.logger.info(f"Chuẩn hóa schema cho nguồn: {source_name}")
             logger.logger.info(f"Các cột hiện có: {', '.join(df.columns)}")
             logger.logger.info(f"Số lượng cột hiện có: {len(df.columns)}")
@@ -181,18 +210,6 @@ def unify_property_data(
                 f"Chuẩn hóa hoàn tất. Số lượng cột sau chuẩn hóa: {len(df.columns)}"
             )
 
-            # Ghi log những cột đặc biệt quan tâm
-            special_columns = ["house_type", "data_type", "location", "seller_info"]
-            for col_name in special_columns:
-                if col_name in df.columns:
-                    logger.logger.info(
-                        f"Cột '{col_name}' tồn tại trong nguồn {source_name}"
-                    )
-                else:
-                    logger.logger.warning(
-                        f"Cột '{col_name}' KHÔNG tồn tại trong nguồn {source_name}"
-                    )
-
             normalized_dfs.append(df)
 
         # Hợp nhất tất cả dữ liệu đã được chuẩn hóa
@@ -205,69 +222,55 @@ def unify_property_data(
             # Nếu chỉ có một nguồn
             unified_df = normalized_dfs[0]
 
-        # Thêm trường property_type dựa vào data_type hoặc house_type nếu có
-        # Kiểm tra xem các cột có tồn tại hay không
-        columns = unified_df.columns
-
-        # Tạo biểu thức cho property_type
-        if "house_type" in columns:
-            property_expr = when(col("house_type").isNotNull(), col("house_type"))
-        else:
-            property_expr = when(lit(False), lit(None))
-
-        if "data_type" in columns:
-            property_expr = property_expr.when(
-                col("data_type").isNotNull(), col("data_type")
-            )
-
-        # Thêm trường property_type
+        # Tạo property_type dựa vào data_type và house_type (nếu có)
+        # Improved logic to handle different field availability
         unified_df = unified_df.withColumn(
-            "property_type", property_expr.otherwise(lit("UNKNOWN"))
+            "property_type",
+            when(
+                col("house_type").isNotNull() & (col("house_type") != ""),
+                col("house_type"),
+            )
+            .when(
+                col("data_type").isNotNull() & (col("data_type") != ""),
+                col("data_type"),
+            )
+            .when(col("bedroom").isNotNull() & (col("bedroom") > 0), lit("HOUSE"))
+            .when(col("area").isNotNull() & (col("area") > 0), lit("LAND"))
+            .otherwise(lit("UNKNOWN")),
         )
 
-        # Trích xuất địa chỉ thành các thành phần
-        # Chỉ thực hiện trích xuất đơn giản, phân tích sâu hơn sẽ làm trong bước làm giàu dữ liệu
+        # Trích xuất địa chỉ thành các thành phần (cải thiện logic)
         if "location" in unified_df.columns:
             unified_df = (
                 unified_df.withColumn(
                     "province",
                     when(
-                        col("location").isNotNull(),
-                        element_at(split(col("location"), ","), -1),
+                        col("location").isNotNull() & (col("location") != ""),
+                        trim(element_at(split(col("location"), ","), -1)),
                     ).otherwise(lit(None)),
                 )
                 .withColumn(
                     "district",
                     when(
-                        col("location").isNotNull(),
-                        element_at(split(col("location"), ","), -2),
+                        col("location").isNotNull()
+                        & (col("location") != "")
+                        & (size(split(col("location"), ",")) >= 2),
+                        trim(element_at(split(col("location"), ","), -2)),
                     ).otherwise(lit(None)),
                 )
                 .withColumn(
                     "ward",
                     when(
-                        col("location").isNotNull(),
-                        element_at(split(col("location"), ","), -3),
+                        col("location").isNotNull()
+                        & (col("location") != "")
+                        & (size(split(col("location"), ",")) >= 3),
+                        trim(element_at(split(col("location"), ","), -3)),
                     ).otherwise(lit(None)),
                 )
             )
 
-        # Trích xuất thông tin người bán
-        if "seller_info" in unified_df.columns:
-            unified_df = unified_df.withColumn(
-                "seller_type",
-                when(lower(col("seller_info")).contains("môi giới"), lit("AGENCY"))
-                .when(lower(col("seller_info")).contains("chính chủ"), lit("OWNER"))
-                .otherwise(lit("UNKNOWN")),
-            )
-        else:
-            # Nếu không có cột seller_info, đặt mặc định là UNKNOWN
-            unified_df = unified_df.withColumn("seller_type", lit("UNKNOWN"))
-
-        # Thêm thông tin xử lý
-        unified_df = unified_df.withColumn(
-            "processing_date", current_timestamp()
-        ).withColumn("processing_id", lit(processing_id))
+        # Thêm thông tin xử lý unify (chỉ processing_id, timestamp đã có từ transform jobs)
+        unified_df = unified_df.withColumn("processing_id", lit(processing_id))
 
         # Không cần áp dụng lại schema vì đã chuẩn hóa DataFrames trước khi hợp nhất
         # Các cột đã được chuẩn hóa và sắp xếp theo thứ tự của schema thống nhất

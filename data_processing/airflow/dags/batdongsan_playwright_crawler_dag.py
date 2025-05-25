@@ -42,7 +42,7 @@ run_list_crawler = DockerOperator(
         "SOURCE": "batdongsan",
         "CRAWLER_TYPE": "playwright",
         "START_PAGE": "1",
-        "END_PAGE": "1000",
+        "END_PAGE": "1",
         "OUTPUT_TOPIC": "property-urls",
         "MAX_CONCURRENT": "10",
         "STOP_ON_EMPTY": "true",

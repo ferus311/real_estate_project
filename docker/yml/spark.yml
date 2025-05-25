@@ -1,15 +1,10 @@
 # Cấu hình chung cho các service Spark
 x-spark-common: &spark-common
-    image: bitnami/spark:3.4.1
+    image: bitnami/spark:latest
+
     networks:
-        - hdfs_network
         - spark_network
-    volumes:
-        - ../../data_processing/spark/jobs:/opt/bitnami/spark/jobs
-        - ../../data_processing/spark/common:/opt/bitnami/spark/common
-        - ../../data_processing/spark/pipelines:/opt/bitnami/spark/pipelines
-        # - ../../data_processing/spark/conf:/opt/bitnami/spark/conf
-        # - ../../data_processing/spark/logs:/opt/bitnami/spark/logs
+        - hdfs_network
 
 services:
     spark-master:
@@ -18,6 +13,11 @@ services:
         environment:
             - SPARK_MODE=master
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+            - SPARK_MASTER_HOST=spark-master
+            - SPARK_MASTER_PORT=7077
+            - SPARK_MASTER_WEBUI_PORT=8080
+        volumes:
+            - ../../data_processing/spark/jobs:/opt/bitnami/spark/jobs
         ports:
             - '7077:7077'
             - '8181:8080'
@@ -37,7 +37,7 @@ services:
     #     container_name: spark-worker2
     #     environment:
     #         - SPARK_MODE=worker
-    #         - SPARK_MASTER_URL=spark://spark-master:7077
+    #         - SPARK_MASTER_URL=spark://spark-master:7077,
     #         - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
     #     depends_on:
     #         - spark-master
@@ -51,6 +51,8 @@ services:
             - '8888:8888'
         volumes:
             - ../../data_processing/notebooks:/home/jovyan/work
+        depends_on:
+            - spark-master
         networks:
             - hdfs_network
             - spark_network
@@ -61,11 +63,13 @@ services:
             dockerfile: Dockerfile
         container_name: spark-processor
         image: spark-processor:latest
+        ports:
+            - '4040:4040' # Spark UI port
+            - '8383:8081' # Spark worker web UI port
         networks:
             - hdfs_network
             - spark_network
         environment:
-            # - SPARK_MODE=worker
             - SPARK_MASTER_URL=spark://spark-master:7077
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
             - SPARK_DRIVER_MEMORY=2g
@@ -75,11 +79,38 @@ services:
             - ../../data_processing/spark/common:/app/common
             - ../../data_processing/spark/pipelines:/app/pipelines
             # Mount additional volumes for logs and data persistence
-            - ../../data/spark_logs:/opt/bitnami/spark/logs
+            # - ../../data/spark_logs:/opt/bitnami/spark/logs
             - /var/run/docker.sock:/var/run/docker.sock
         depends_on:
             - spark-master
-        restart: unless-stopped
+        restart: no
+        # Keep container running for manual job submission
+        command: tail -f /dev/null
+
+    # spark-submit:
+    #     <<: *spark-common
+    #     container_name: spark-submit
+    #     environment:
+    #         - SPARK_MODE=worker
+    #         - SPARK_MASTER_URL=spark://spark-master:7077
+    #         - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    #         - PYTHONPATH=/opt/bitnami/spark/app:/opt/bitnami/spark/common
+    #         # FIX: Set proper HOME directory
+    #         - HOME=/opt/bitnami/spark
+    #         # FIX: Set Ivy cache directory
+    #         - SPARK_SUBMIT_OPTS=-Divy.cache.dir=/tmp/.ivy -Divy.home=/tmp/.ivy
+    #         # FIX: Java system properties
+    #         - JAVA_OPTS=-Duser.home=/opt/bitnami/spark -Divy.cache.dir=/tmp/.ivy
+    #     volumes:
+    #         - ../../data_processing/spark/jobs:/app/jobs
+    #         - ../../data_processing/spark/common:/app/common
+    #         - ../../data_processing/spark/pipelines:/app/pipelines
+    #         # FIX: Add ivy cache volume
+    #         - spark_ivy_cache:/tmp/.ivy
+    #     depends_on:
+    #         - spark-master
+    #     # Keep container running for manual job submission
+    #     command: tail -f /dev/null
 
 networks:
     hdfs_network:
@@ -87,3 +118,7 @@ networks:
         name: hdfs_network
     spark_network:
         name: spark_network
+volumes:
+    # Add volume for ivy cache
+    spark_ivy_cache:
+        driver: local

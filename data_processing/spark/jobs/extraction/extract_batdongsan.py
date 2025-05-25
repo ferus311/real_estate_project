@@ -53,7 +53,7 @@ def extract_batdongsan_data(
         "/data/realestate/raw", "batdongsan", property_type, input_date
     )
     bronze_path = get_hdfs_path(
-        "/data/realestate/processed/cleaned", property_type, input_date
+        "/data/realestate/processed/bronze", "batdongsan", property_type, input_date
     )
 
     logger.logger.info(f"Đọc dữ liệu từ: {raw_data_path}")
@@ -73,10 +73,15 @@ def extract_batdongsan_data(
         schema = get_batdongsan_raw_schema()
         raw_df = spark.read.schema(schema).json(raw_data_path)
 
-        # Thêm các trường metadata
-        augmented_df = raw_df.withColumn(
-            "processing_date", current_timestamp()
-        ).withColumn("processing_id", lit(processing_id))
+        # Thêm các trường metadata theo common schema
+        augmented_df = (
+            raw_df.withColumn("processing_date", current_timestamp())
+            .withColumn("processing_id", lit(processing_id))
+            .withColumn(
+                "data_source", lit("batdongsan.com.vn")
+            )  # Field name consistency
+            .withColumn("data_layer", lit("bronze"))
+        )
 
         # Log thông tin cơ bản
         logger.log_dataframe_info(augmented_df, "raw_data")
