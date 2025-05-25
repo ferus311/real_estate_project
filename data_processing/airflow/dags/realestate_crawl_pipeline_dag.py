@@ -14,7 +14,7 @@ default_args = {
 }
 
 dag = DAG(
-    "realestate_full_pipeline",
+    "realestate_crawl_pipeline",
     default_args=default_args,
     description="Full pipeline: Run crawler and then storage service",
     schedule_interval=None,  # Chạy thủ công (có thể đặt lịch nếu cần)
@@ -100,7 +100,7 @@ verify_results = BashOperator(
 # Chạy crawlers song song, sau đó storage, và cuối cùng là xác minh
 (
     check_services
-    >> [ trigger_playwright_crawler]
+    >> [ trigger_api_crawler, trigger_playwright_crawler]
     >> trigger_storage
     >> verify_results
 )

@@ -1,218 +1,161 @@
-"""
-DAG xử lý dữ liệu bất động sản
-"""
-
-from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
-from airflow.operators.dummy import DummyOperator
-from airflow.utils.task_group import TaskGroup
-from datetime import datetime, timedelta
-import os
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.utils.dates import days_ago
+from docker.types import Mount
+from airflow import DAG
+from airflow.models import TaskInstance
+from datetime import timedelta
+import re
 
-# Cấu hình mặc định cho DAG
+
 default_args = {
     "owner": "airflow",
-    "depends_on_past": False,
-    "email_on_failure": True,
-    "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "catchup": False,
+    "depends_on_past": False,
 }
-
-# Thư mục gốc chứa mã nguồn
-SPARK_DIR = "/home/fer/data/real_estate_project/data_processing/spark"
-
-# Tạo DAG
 dag = DAG(
     "realestate_data_processing",
     default_args=default_args,
-    description="Real Estate Data Processing Pipeline",
-    schedule_interval="0 1 * * *",  # Chạy hàng ngày lúc 1 giờ sáng
-    start_date=datetime(2025, 5, 1),
-    catchup=False,
-    tags=["realestate", "data_processing"],
+    description="DAG xử lý dữ liệu bất động sản qua Spark",
+    schedule_interval=None,  # DAG này được trigger bởi pipeline_dag
+    start_date=days_ago(1),
+    tags=["data_processing", "realestate"],
 )
 
-# Operator bắt đầu
-start = DummyOperator(
-    task_id="start_pipeline",
+# Tham số ngày xử lý từ kích hoạt (có thể được truyền từ pipeline chính)
+processing_date = "{{ dag_run.conf.get('processing_date') or (execution_date - macros.timedelta(days=1)).strftime('%Y-%m-%d') }}"
+property_types = "{{ dag_run.conf.get('property_types', 'house') }}"
+
+# processing_date = "2025-05-22"
+# Chạy xử lý đầy đủ (Raw → Bronze → Silver → Gold)
+run_processing = DockerOperator(
+    task_id="run_full_processing",
+    image="spark-processor:latest",
+    command=f"python /app/pipelines/daily_processing.py --date {processing_date} --property-types {property_types}",
+    network_mode="hdfs_network",
+    api_version="auto",
+    auto_remove=True,
+    mount_tmp_dir=False,
+    environment={
+        "SPARK_MASTER_URL": "spark://spark-master:7077",
+        "CORE_CONF_fs_defaultFS": "hdfs://namenode:9000",
+        "HDFS_NAMENODE_ADDRESS": "hdfs://namenode:9000",
+    },
+    docker_url="unix://var/run/docker.sock",
     dag=dag,
 )
 
-# Operator kết thúc
-end = DummyOperator(
-    task_id="end_pipeline",
+# Thêm task hiển thị tham số đã nhận
+show_parameters = BashOperator(
+    task_id="show_parameters",
+    bash_command=f"""
+    echo "================= THÔNG TIN THAM SỐ NHẬN ĐƯỢC ================="
+    echo "Ngày xử lý: {processing_date}"
+    echo "Loại bất động sản: {property_types}"
+    echo "================================================================"
+    """,
     dag=dag,
 )
 
-# TaskGroup cho xử lý dữ liệu nhà ở (house)
-with TaskGroup(group_id="process_house_data", dag=dag) as process_house:
-    # 1. Extract Data
-    extract_batdongsan_house = BashOperator(
-        task_id="extract_batdongsan_house",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/extraction/extract_batdongsan.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
 
-    extract_chotot_house = BashOperator(
-        task_id="extract_chotot_house",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/extraction/extract_chotot.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+# Kiểm tra kết quả xử lý dữ liệu bằng cách đọc logs từ task trước
+def verify_processing_results(ti, **context):
+    # processing_date = context["dag_run"].conf.get("processing_date", None)
+    if processing_date is None:
+        from datetime import datetime, timedelta
 
-    # 2. Transform Data
-    transform_batdongsan_house = BashOperator(
-        task_id="transform_batdongsan_house",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/transform_batdongsan.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+        # Mặc định là ngày hôm qua nếu không có tham số
+        processing_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    transform_chotot_house = BashOperator(
-        task_id="transform_chotot_house",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/transform_chotot.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+    # Lấy logs từ task run_processing
+    task_logs = ti.xcom_pull(task_ids="run_full_processing")
+    if not task_logs:
+        # Nếu không lấy được qua xcom, thử đọc logs trực tiếp
+        task_instance = TaskInstance(
+            ti.task.dag.get_task("run_full_processing"), ti.execution_date
+        )
+        logs = "\n".join(task_instance.log.splitlines())
+    else:
+        logs = task_logs
 
-    # 3. Unify Data
-    unify_house_data = BashOperator(
-        task_id="unify_house_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/unify_dataset.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+    print("================= BÁO CÁO XỬ LÝ NGÀY", processing_date, "=================")
 
-    # 4. Data Quality
-    validate_house_data = BashOperator(
-        task_id="validate_house_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/data_quality/data_validation.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+    # Tìm thông tin về số lượng file được xử lý từ logs
+    bronze_files = 0
+    silver_files = 0
+    gold_files = 0
 
-    # 5. Enrichment
-    enrich_house_data = BashOperator(
-        task_id="enrich_house_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/enrichment/geo_enrichment.py --date {{{{ ds }}}} --property-type house",
-        dag=dag,
-    )
+    # Phân tích logs để tìm các dòng liên quan đến kết quả xử lý
+    if "Successfully processed" in logs:
+        print("✅ Tìm thấy thông báo xử lý thành công trong logs")
 
-    # 6. Load to Delta
-    load_house_to_delta = BashOperator(
-        task_id="load_house_to_delta",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/load/load_to_delta.py --date {{{{ ds }}}} --property-type house --table-name property_data",
-        dag=dag,
-    )
+        # Tìm thông tin về Bronze files
+        bronze_matches = re.findall(r"Bronze: (\d+) records", logs)
+        if bronze_matches:
+            bronze_files = sum([int(count) for count in bronze_matches])
 
-    # Set up task dependencies
-    [extract_batdongsan_house, extract_chotot_house] >> [
-        transform_batdongsan_house,
-        transform_chotot_house,
-    ]
-    (
-        [transform_batdongsan_house, transform_chotot_house]
-        >> unify_house_data
-        >> validate_house_data
-        >> enrich_house_data
-        >> load_house_to_delta
-    )
+        # Tìm thông tin về Silver files
+        silver_matches = re.findall(r"Silver: (\d+) records", logs)
+        if silver_matches:
+            silver_files = sum([int(count) for count in silver_matches])
 
-# TaskGroup cho xử lý dữ liệu loại khác (other)
-with TaskGroup(group_id="process_other_data", dag=dag) as process_other:
-    # 1. Extract Data
-    extract_batdongsan_other = BashOperator(
-        task_id="extract_batdongsan_other",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/extraction/extract_batdongsan.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+        # Tìm thông tin về Gold files
+        gold_matches = re.findall(r"Unified Gold: (\d+) records", logs)
+        if gold_matches:
+            gold_files = sum([int(count) for count in gold_matches])
 
-    extract_chotot_other = BashOperator(
-        task_id="extract_chotot_other",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/extraction/extract_chotot.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+    # Nếu không tìm được trong logs, thực hiện kiểm tra HDFS trực tiếp
+    if gold_files == 0:
+        # Format ngày để tìm kiếm file
+        date_format = processing_date.replace("-", "")
 
-    # 2. Transform Data
-    transform_batdongsan_other = BashOperator(
-        task_id="transform_batdongsan_other",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/transform_batdongsan.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+        print("Không tìm thấy thông tin đầy đủ trong logs, kiểm tra HDFS trực tiếp...")
+        # Sử dụng câu lệnh bash để kiểm tra trực tiếp
+        import subprocess
 
-    transform_chotot_other = BashOperator(
-        task_id="transform_chotot_other",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/transform_chotot.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+        # Kiểm tra các layer
+        bronze_cmd = f'docker exec namenode bash -c \'hdfs dfs -find /data/realestate/processed/bronze -name "*.parquet" -path "*{processing_date}*" | wc -l\''
+        silver_cmd = f'docker exec namenode bash -c \'hdfs dfs -find /data/realestate/processed/silver -name "*.parquet" -path "*{processing_date}*" | wc -l\''
+        gold_cmd = f'docker exec namenode bash -c \'hdfs dfs -find /data/realestate/processed/gold -name "*.parquet" -path "*{processing_date}*" | wc -l\''
 
-    # 3. Unify Data
-    unify_other_data = BashOperator(
-        task_id="unify_other_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/unify_dataset.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+        try:
+            bronze_files = int(
+                subprocess.check_output(bronze_cmd, shell=True).decode().strip()
+            )
+            silver_files = int(
+                subprocess.check_output(silver_cmd, shell=True).decode().strip()
+            )
+            gold_files = int(
+                subprocess.check_output(gold_cmd, shell=True).decode().strip()
+            )
+        except Exception as e:
+            print(f"Lỗi khi kiểm tra HDFS: {str(e)}")
 
-    # 4. Data Quality
-    validate_other_data = BashOperator(
-        task_id="validate_other_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/data_quality/data_validation.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+    print("Đã tìm thấy", bronze_files, "bản ghi trong Bronze Layer")
+    print("Đã tìm thấy", silver_files, "bản ghi trong Silver Layer")
+    print("Đã tìm thấy", gold_files, "bản ghi trong Gold Layer")
 
-    # 5. Enrichment
-    enrich_other_data = BashOperator(
-        task_id="enrich_other_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/enrichment/geo_enrichment.py --date {{{{ ds }}}} --property-type other",
-        dag=dag,
-    )
+    # Nếu không có file nào trong Gold layer, quá trình xử lý đã thất bại
+    if gold_files == 0:
+        print(
+            f"❌ CẢNH BÁO: Không tìm thấy dữ liệu Gold nào cho ngày {processing_date}!"
+        )
+        print("Hãy kiểm tra logs chi tiết để xác định vấn đề.")
+        raise Exception("Không tìm thấy dữ liệu Gold, xử lý thất bại.")
+    else:
+        print("✅ Xử lý dữ liệu hoàn tất thành công với", gold_files, "bản ghi!")
+        return True
 
-    # 6. Load to Delta
-    load_other_to_delta = BashOperator(
-        task_id="load_other_to_delta",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/load/load_to_delta.py --date {{{{ ds }}}} --property-type other --table-name property_data",
-        dag=dag,
-    )
 
-    # Set up task dependencies
-    [extract_batdongsan_other, extract_chotot_other] >> [
-        transform_batdongsan_other,
-        transform_chotot_other,
-    ]
-    (
-        [transform_batdongsan_other, transform_chotot_other]
-        >> unify_other_data
-        >> validate_other_data
-        >> enrich_other_data
-        >> load_other_to_delta
-    )
+# verify_results = PythonOperator(
+#     task_id="verify_results",
+#     python_callable=verify_processing_results,
+#     provide_context=True,
+#     dag=dag,
+# )
 
-# TaskGroup cho xử lý dữ liệu tổng hợp (all)
-with TaskGroup(group_id="process_all_data", dag=dag) as process_all:
-    # Hợp nhất và đánh giá tất cả dữ liệu
-    unify_all_data = BashOperator(
-        task_id="unify_all_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/transformation/unify_dataset.py --date {{{{ ds }}}} --property-type all",
-        dag=dag,
-    )
-
-    validate_all_data = BashOperator(
-        task_id="validate_all_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/data_quality/data_validation.py --date {{{{ ds }}}} --property-type all",
-        dag=dag,
-    )
-
-    enrich_all_data = BashOperator(
-        task_id="enrich_all_data",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/enrichment/geo_enrichment.py --date {{{{ ds }}}} --property-type all",
-        dag=dag,
-    )
-
-    load_all_to_delta = BashOperator(
-        task_id="load_all_to_delta",
-        bash_command=f"spark-submit {SPARK_DIR}/jobs/load/load_to_delta.py --date {{{{ ds }}}} --property-type all --table-name property_all_data",
-        dag=dag,
-    )
-
-    # Set up task dependencies
-    unify_all_data >> validate_all_data >> enrich_all_data >> load_all_to_delta
-
-# Thiết lập thứ tự thực hiện các task group
-start >> [process_house, process_other] >> process_all >> end
+# Định nghĩa luồng công việc đơn giản
+show_parameters >> run_processing

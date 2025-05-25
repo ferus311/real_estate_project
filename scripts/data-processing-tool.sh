@@ -104,6 +104,13 @@ check_error "Không thể khởi động Spark"
 # Đợi Spark khởi động
 wait_for_service "Spark" "8181" "localhost" 120
 
+# Khởi động Airflow
+echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
+docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
+check_error "Không thể khởi động Airflow"
+
+# Đợi Airflow webserver khởi động
+wait_for_service "Airflow webserver" "8080" "localhost" 180
 
 echo "===== HOÀN THÀNH KHỞI ĐỘNG ====="
 echo "Tất cả các dịch vụ đã được khởi động trong $MINUTES phút $SECONDS giây!"

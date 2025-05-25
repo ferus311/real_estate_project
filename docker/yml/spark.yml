@@ -42,15 +42,15 @@ services:
         depends_on:
             - spark-master
 
-    spark-worker-2:
-        <<: *spark-common
-        container_name: spark-worker2
-        environment:
-            - SPARK_MODE=worker
-            - SPARK_MASTER_URL=spark://spark-master:7077
-            - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-        depends_on:
-            - spark-master
+    # spark-worker-2:
+    #     <<: *spark-common
+    #     container_name: spark-worker2
+    #     environment:
+    #         - SPARK_MODE=worker
+    #         - SPARK_MASTER_URL=spark://spark-master:7077
+    #         - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    #     depends_on:
+    #         - spark-master
 
     jupyter:
         build:
@@ -83,7 +83,6 @@ services:
             - ../../data_processing/spark/jobs:/app/jobs
             - ../../data_processing/spark/common:/app/common
             - ../../data_processing/spark/pipelines:/app/pipelines
-            - /var/run/docker.sock:/var/run/docker.sock
         depends_on:
             - spark-master
         restart: unless-stopped
