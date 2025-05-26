@@ -1,0 +1,79 @@
+.simple-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.simple-header {
+  position: relative;
+  padding: 0 20px;
+  height: 60px;
+  line-height: 60px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  background-size: cover !important;
+  background-position: center !important;
+  color: white;
+}
+
+.header-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+}
+
+.header-logo {
+  display: flex;
+  align-items: center;
+  color: white;
+  position: relative;
+  z-index: 2; /* Higher than the overlay */
+}
+
+.logo-wrapper {
+  margin-right: 15px;
+  display: flex;
+  align-items: center;
+}
+
+.hust-logo {
+  height: 42px;
+  width: auto;
+}
+
+.app-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: black;
+}
+
+.simple-content {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  background: #f5f7fa;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 576px) {
+  .simple-header {
+    padding: 0 15px;
+    height: 54px;
+    line-height: 54px;
+  }
+
+  .app-name {
+    font-size: 16px;
+  }
+
+  .hust-logo {
+    height: 36px;
+  }
+}

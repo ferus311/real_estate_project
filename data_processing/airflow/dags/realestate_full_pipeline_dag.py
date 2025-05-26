@@ -24,11 +24,8 @@ dag = DAG(
     tags=["pipeline", "crawler", "storage", "processing"],
 )
 
-# Tham số ngày xử lý - lấy ngày hôm trước để xử lý dữ liệu từ crawler
-processing_date = (
-    "{{ (execution_date - macros.timedelta(days=1)).strftime('%Y-%m-%d') }}"
-)
-
+# Tham số ngày xử lý - lấy ngày để xử lý dữ liệu từ crawler
+processing_date = "{{ execution_date.strftime('%Y-%m-%d') }}"
 # Kiểm tra trạng thái Kafka, HDFS, Spark
 check_services = BashOperator(
     task_id="check_services",

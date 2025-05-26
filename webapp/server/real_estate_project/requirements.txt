@@ -1,0 +1,7 @@
+django
+scikit-learn
+pandas
+joblib
+requests
+python-dotenv
+django-cors-headers

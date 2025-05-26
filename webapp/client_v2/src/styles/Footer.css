@@ -1,0 +1,36 @@
+.footer {
+  background-color: var(--color-gray-50);
+  color: var(--color-gray-700);
+  border-top: 1px solid var(--color-gray-200);
+}
+
+.footer-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.footer-links {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.footer-link {
+  color: var(--color-gray-700);
+  transition: color 0.2s;
+}
+
+.footer-link:hover {
+  color: var(--color-brand-500);
+}
+
+@media (max-width: 768px) {
+  .footer-container {
+    flex-direction: column;
+    gap: 1rem;
+    text-align: center;
+  }
+}
