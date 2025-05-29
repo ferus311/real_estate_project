@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import timedelta, datetime
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.operators.bash import BashOperator
@@ -18,14 +18,15 @@ dag = DAG(
     "realestate_full_pipeline_daily",
     default_args=default_args,
     description="Pipeline đầy đủ: Crawler -> Storage -> Xử lý dữ liệu",
-    # schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày
-    schedule_interval=None,  # Chạy thủ công (có thể đặt lịch nếu cần)
-    start_date=days_ago(1),
+    schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày
+    # schedule_interval=None,  # Chạy thủ công (có thể đặt lịch nếu cần)
+    catchup=False,  # Không chạy các ngày đã bỏ lỡ
+    start_date=datetime(2025, 5, 1),  # Ngày bắt đầu DAG
     tags=["pipeline", "crawler", "storage", "processing"],
 )
 
 # Tham số ngày xử lý - lấy ngày để xử lý dữ liệu từ crawler
-processing_date = "{{ execution_date.strftime('%Y-%m-%d') }}"
+processing_date = "{{ ds }}"
 # Kiểm tra trạng thái Kafka, HDFS, Spark
 check_services = BashOperator(
     task_id="check_services",

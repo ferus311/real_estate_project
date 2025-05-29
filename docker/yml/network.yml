@@ -1,0 +1,10 @@
+# creat network for docker compose
+networks:
+    hdfs_network:
+        driver: bridge
+    spark_network:
+        driver: bridge
+    kafka_network:
+        driver: bridge
+    airflow_network:
+        driver: bridge

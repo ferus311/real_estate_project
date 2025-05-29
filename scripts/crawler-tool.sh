@@ -77,6 +77,12 @@ if ! docker network ls | grep -q hdfs_network; then
     check_error "Không thể tạo network hdfs_network"
 fi
 
+if ! docker network ls | grep -q spark_network; then
+    echo -e "${BLUE}[INFO]${NC} Tạo network spark_network..."
+    docker network create spark_network
+    check_error "Không thể tạo network spark_network"
+fi
+
 if ! docker network ls | grep -q kafka_network; then
     echo -e "${BLUE}[INFO]${NC} Tạo network kafka_network..."
     docker network create kafka_network
@@ -112,10 +118,17 @@ check_error "Không thể khởi động Airflow"
 # Đợi Airflow webserver khởi động
 wait_for_service "Airflow webserver" "8080" "localhost" 180
 
-# Khởi động crawler shell
-# echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
-# docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml up -d crawler-shell
-# check_error "Không thể khởi động crawler shell"
+Khởi động crawler shell
+echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
+docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
+check_error "Không thể khởi động crawler shell"
+
+# Khởi động Spark
+echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml build 
+check_error "Không thể khởi động Spark"
+# Đợi Spark khởi động
+wait_for_service "Spark" "8181" "localhost" 120
 
 echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
 echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"

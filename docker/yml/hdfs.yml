@@ -100,3 +100,4 @@ volumes:
 networks:
     hdfs_network:
         name: hdfs_network
+        external: true

@@ -93,6 +93,7 @@ services:
 networks:
     kafka_network:
         name: kafka_network
+        external: true
     hdfs_network:
         external: true
         name: hdfs_network

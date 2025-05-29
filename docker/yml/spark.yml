@@ -93,3 +93,4 @@ networks:
         name: hdfs_network
     spark_network:
         name: spark_network
+        external: true

@@ -2,140 +2,128 @@
 
 # Đặt biến để dễ debug
 set -e  # Thoát script nếu có lỗi
-START_TIME=$(date +%s)
+cd ./docker
+# Màu sắc cho output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-echo "===== BẮT ĐẦU KHỞI ĐỘNG HỆ THỐNG THU THẬP DỮ LIỆU BẤT ĐỘNG SẢN ====="
-echo "Thời gian bắt đầu: $(date)"
+# Thư mục gốc của dự án
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Danh sách các thư mục cần thiết
-dirs=(
-  "docker/volumes/hdfs/namenode"
-  "docker/volumes/hdfs/datanode1"
-#   "docker/volumes/hdfs/datanode2"
-#   "docker/volumes/hdfs/datanode3"
-  "data_processing/airflow/dags"
-  "data_processing/airflow/logs"
-  "data_processing/airflow/plugins"
-  "data_processing/notebooks"
-  "data_processing/spark/jobs"
-)
+# Đảm bảo biến môi trường AIRFLOW_UID được thiết lập
+export AIRFLOW_UID=${AIRFLOW_UID:-$(id -u)}
+echo -e "${BLUE}[INFO]${NC} Sử dụng AIRFLOW_UID=${AIRFLOW_UID}"
 
-# Kiểm tra xem có thiếu thư mục nào không
-need_init=false
-for dir in "${dirs[@]}"; do
-  if [ ! -d "$dir" ]; then
-    echo "⚠️  Thiếu thư mục: $dir"
-    need_init=true
-    break
-  fi
-done
+# Hàm kiểm tra lỗi
+check_error() {
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}[ERROR]${NC} $1"
+        exit 1
+    fi
+}
 
-# Nếu thiếu, gọi script init
-if $need_init; then
-  echo "🚧 Đang chạy init_volumes.sh để tạo thư mục..."
-  ./scripts/init_volumes.sh
+# Hàm kiểm tra dịch vụ đã sẵn sàng chưa
+wait_for_service() {
+    local service=$1
+    local port=$2
+    local host=${3:-localhost}
+    local timeout=${4:-60}
+
+    echo -e "${YELLOW}[WAIT]${NC} Đang chờ $service khởi động tại $host:$port..."
+
+    local start_time=$(date +%s)
+    local end_time=$((start_time + timeout))
+
+    while [ $(date +%s) -lt $end_time ]; do
+        if nc -z $host $port > /dev/null 2>&1; then
+            echo -e "${GREEN}[OK]${NC} $service đã sẵn sàng!"
+            return 0
+        fi
+        sleep 2
+    done
+
+    echo -e "${RED}[TIMEOUT]${NC} $service không khởi động sau $timeout giây."
+    return 1
+}
+
+# Tạo thư mục volumes nếu chưa tồn tại
+mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
+mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
+mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
+
+
+sudo mkdir -p /crawler/checkpoint
+
+
+if ! grep -qs ${PROJECT_DIR}/docker/volumes/crawler/checkpoint /proc/mounts; then
+    echo "Mounting..."
+    sudo mount --bind /crawler/checkpoint ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 else
-  echo "✅ Tất cả thư mục đã tồn tại. Bỏ qua bước init."
+    echo "Already mounted"
 fi
 
 
-# Kiểm tra file hadoop.env
-HADOOP_ENV_FILE="docker/hadoop.env"
-
-if [ ! -f "$HADOOP_ENV_FILE" ]; then
-    echo "CẢNH BÁO: Không tìm thấy file hadoop.env tại $HADOOP_ENV_FILE."
-    exit 1
+# Kiểm tra xem các networks đã tồn tại chưa
+echo -e "${BLUE}[INFO]${NC} Kiểm tra và tạo Docker networks..."
+if ! docker network ls | grep -q hdfs_network; then
+    echo -e "${BLUE}[INFO]${NC} Tạo network hdfs_network..."
+    docker network create hdfs_network
+    check_error "Không thể tạo network hdfs_network"
 fi
 
-# Di chuyển đến thư mục docker
-cd docker
-
-# Khởi chạy hệ thống từng phần
-echo "===== KHỞI ĐỘNG HỆ THỐNG ====="
-
-# 1. Khởi động HDFS
-echo "===== KHỞI ĐỘNG HDFS ====="
-docker compose -f yml/hdfs.yml up -d
-echo "Đợi HDFS khởi động hoàn tất..."
-sleep 5
-
-# Kiểm tra HDFS đã khởi động thành công
-if docker ps | grep namenode > /dev/null; then
-    echo "✅ HDFS namenode đã khởi động thành công."
-else
-    echo "❌ HDFS namenode khởi động thất bại. Kiểm tra logs: docker logs namenode"
-    exit 1
+if ! docker network ls | grep -q spark_network; then
+    echo -e "${BLUE}[INFO]${NC} Tạo network spark_network..."
+    docker network create spark_network
+    check_error "Không thể tạo network spark_network"
 fi
 
-# 2. Khởi động Kafka và ZooKeeper
-echo "===== KHỞI ĐỘNG KAFKA ====="
-docker compose -f yml/kafka.yml up -d
-echo "Đợi Kafka khởi động hoàn tất..."
-sleep 5
-
-# Kiểm tra Kafka đã khởi động thành công
-if docker ps | grep kafka > /dev/null; then
-    echo "✅ Kafka đã khởi động thành công."
-else
-    echo "❌ Kafka khởi động thất bại. Kiểm tra logs: docker logs kafka"
-    exit 1
+if ! docker network ls | grep -q kafka_network; then
+    echo -e "${BLUE}[INFO]${NC} Tạo network kafka_network..."
+    docker network create kafka_network
+    check_error "Không thể tạo network kafka_network"
 fi
 
-# 3. Khởi động Airflow
-echo "===== KHỞI ĐỘNG AIRFLOW ====="
-# Thiết lập Airflow
-docker compose -f yml/airflow.yml up -d
-sleep 5
-# Kiểm tra Airflow đã khởi động thành công
-if docker ps | grep airflow-web > /dev/null; then
-    echo "✅ Airflow webserver đã khởi động thành công."
-else
-    echo "❌ Airflow webserver khởi động thất bại. Kiểm tra logs: docker logs airflow-web"
-fi
 
-# 4. Khởi động Spark
-echo "===== KHỞI ĐỘNG SPARK ====="
-docker compose -f yml/spark.yml up -d
-echo "Đợi Spark khởi động hoàn tất..."
-sleep 5
+# Khởi động HDFS cluster
+echo -e "${BLUE}[INFO]${NC} Khởi động HDFS cluster..."
+docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d namenode
+check_error "Không thể khởi động namenode"
 
-# Kiểm tra Spark đã khởi động thành công
-if docker ps | grep spark-master > /dev/null; then
-    echo "✅ Spark master đã khởi động thành công."
-else
-    echo "❌ Spark master khởi động thất bại. Kiểm tra logs: docker logs spark-master"
-fi
+# Đợi namenode khởi động
+wait_for_service "namenode" "9870" "localhost" 120
 
-# 5. Khởi động các crawler service
-# echo "===== KHỞI ĐỘNG CRAWLER SERVICES ====="
-# docker compose -f yml/crawler.yml up -d
-# echo "Đợi các crawler service khởi động hoàn tất..."
-# sleep 5
+# Khởi động các datanode
+echo -e "${BLUE}[INFO]${NC} Khởi động các datanode..."
+docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d datanode1
+check_error "Không thể khởi động datanode"
 
-# Kiểm tra các dịch vụ chính đã hoạt động chưa
-echo "===== KIỂM TRA TRẠNG THÁI DỊCH VỤ ====="
+# Khởi động Kafka
+echo -e "${BLUE}[INFO]${NC} Khởi động Zookeeper và Kafka..."
+docker compose -f ${PROJECT_DIR}/docker/yml/kafka.yml up -d
+check_error "Không thể khởi động Kafka"
 
-# Tính thời gian khởi động
-END_TIME=$(date +%s)
-RUNTIME=$((END_TIME-START_TIME))
-MINUTES=$((RUNTIME / 60))
-SECONDS=$((RUNTIME % 60))
+# Đợi Kafka khởi động
+wait_for_service "Kafka" "9092" "localhost" 120
 
-echo "===== HOÀN THÀNH KHỞI ĐỘNG ====="
-echo "Tất cả các dịch vụ đã được khởi động trong $MINUTES phút $SECONDS giây!"
-echo
-echo "TRUY CẬP CÁC GIAO DIỆN:"
-echo "- HDFS UI: http://localhost:9870"
-echo "- Airflow UI: http://localhost:8080 (user/pass: admin/admin)"
-echo "- Spark UI: http://localhost:8181"
-echo "- Jupyter: http://localhost:8888"
-echo
-echo "KIỂM TRA TRẠNG THÁI:"
-echo "- Xem danh sách container: docker ps"
-echo "- Xem logs HDFS: docker logs namenode"
-echo "- Xem logs Kafka: docker logs kafka"
-echo "- Xem logs Airflow: docker logs airflow-web"
-echo "- Xem logs crawler: docker logs list-crawler"
-echo
-echo "DỪNG HỆ THỐNG:"
-echo "- Sử dụng: ./scripts/stop_all.sh"
+# Khởi động Airflow
+echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
+docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
+check_error "Không thể khởi động Airflow"
+
+# Đợi Airflow webserver khởi động
+wait_for_service "Airflow webserver" "8080" "localhost" 180
+
+Khởi động crawler shell
+echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
+docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml crawler-shell build spark-processor
+check_error "Không thể khởi động crawler shell"
+
+
+echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
+echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"
+echo -e "${GREEN}[INFO]${NC} HDFS UI: http://localhost:9870"
+echo -e "${GREEN}[INFO]${NC} Kafka UI: http://localhost:8282"
+echo -e "${GREEN}[INFO]${NC} Để truy cập crawler shell: docker exec -it crawler-shell bash"
