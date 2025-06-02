@@ -26,7 +26,7 @@ dag = DAG(
 )
 
 # Tham số ngày xử lý từ kích hoạt (có thể được truyền từ pipeline chính)
-processing_date = "{{ dag_run.conf.get('processing_date') or execution_date.strftime('%Y-%m-%d') }}"
+processing_date = "{{ dag_run.conf.get('processing_date') or ds }}"
 property_types = "{{ dag_run.conf.get('property_types', 'house') }}"
 
 # processing_date = "2025-05-22"

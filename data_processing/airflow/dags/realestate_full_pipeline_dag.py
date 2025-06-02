@@ -27,6 +27,17 @@ dag = DAG(
 
 # Tham số ngày xử lý - lấy ngày để xử lý dữ liệu từ crawler
 processing_date = "{{ ds }}"
+
+show_parameters = BashOperator(
+    task_id="show_parameters",
+    bash_command=f"""
+    echo "================= THÔNG TIN THAM SỐ NHẬN ĐƯỢC ================="
+    echo "Ngày xử lý: {processing_date}"
+    echo "================================================================"
+    """,
+    dag=dag,
+)
+
 # Kiểm tra trạng thái Kafka, HDFS, Spark
 check_services = BashOperator(
     task_id="check_services",
@@ -132,6 +143,7 @@ trigger_data_processing = TriggerDagRunOperator(
 # 6. Xác minh toàn bộ pipeline
 (
     check_services
+    >> show_parameters
     >> [trigger_api_crawler, trigger_playwright_crawler]
     >> trigger_storage
     >> wait_for_storage

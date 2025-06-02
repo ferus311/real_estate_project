@@ -2,7 +2,7 @@
 
 # Đặt biến để dễ debug
 set -e  # Thoát script nếu có lỗi
-cd ./docker
+
 # Màu sắc cho output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -52,6 +52,7 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
+
 mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 
 
@@ -116,10 +117,15 @@ check_error "Không thể khởi động Airflow"
 # Đợi Airflow webserver khởi động
 wait_for_service "Airflow webserver" "8080" "localhost" 180
 
-Khởi động crawler shell
-echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
-docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml crawler-shell build spark-processor
-check_error "Không thể khởi động crawler shell"
+# Khởi động crawler image
+echo -e "${BLUE}[INFO]${NC} Khởi động crawler image..."
+docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
+check_error "Không thể khởi động crawler image"
+
+# Khởi động spark image
+echo -e "${BLUE}[INFO]${NC} Khởi động crawler image..."
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml build spark-processor
+check_error "Không thể khởi động crawler image"
 
 
 echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
