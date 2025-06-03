@@ -22,134 +22,6 @@ from common.utils.date_utils import get_date_format, get_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
 
-
-def check_data_availability(spark: SparkSession, path: str) -> tuple[bool, int]:
-    """Check if data exists at path and return count"""
-    try:
-        print(f"🔍 Checking path: {path}")
-
-        # First try to check if path exists using basic file system check
-        try:
-            # Try to list files in directory
-            files = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
-                spark._jsc.hadoopConfiguration()
-            ).listStatus(spark._jvm.org.apache.hadoop.fs.Path(path))
-            print(f"📁 Found {len(files)} files/directories in path")
-
-            # Check if any .parquet files exist and get their sizes
-            parquet_files = []
-            total_size = 0
-
-            for f in files:
-                file_path = str(f.getPath())
-                if file_path.endswith(".parquet"):
-                    file_size = f.getLen()
-                    total_size += file_size
-                    parquet_files.append((file_path, file_size))
-                    print(f"📄 Parquet file: {file_path} ({file_size} bytes)")
-                elif f.isDirectory():
-                    # Check subdirectories for parquet files
-                    try:
-                        sub_files = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
-                            spark._jsc.hadoopConfiguration()
-                        ).listStatus(f.getPath())
-
-                        for sub_f in sub_files:
-                            sub_path = str(sub_f.getPath())
-                            if sub_path.endswith(".parquet"):
-                                file_size = sub_f.getLen()
-                                total_size += file_size
-                                parquet_files.append((sub_path, file_size))
-                                print(
-                                    f"📄 Parquet file: {sub_path} ({file_size} bytes)"
-                                )
-                    except Exception:
-                        pass  # Skip subdirectories that can't be read
-
-            print(
-                f"📄 Found {len(parquet_files)} parquet files, total size: {total_size} bytes"
-            )
-
-            # If no parquet files or all files are empty
-            if not parquet_files or total_size == 0:
-                print(f"⚠️ No valid parquet files found or all files are empty")
-                return False, 0
-
-        except Exception as fs_e:
-            print(f"⚠️ File system check failed: {str(fs_e)}")
-            return False, 0
-
-        # Now try to read parquet data with schema inference handling
-        try:
-            # First attempt: normal read with schema inference
-            df = spark.read.parquet(path)
-            count = df.count()
-            print(f"✅ Successfully read {count:,} records from {path}")
-            return True, count
-
-        except Exception as schema_error:
-            if "UNABLE_TO_INFER_SCHEMA" in str(schema_error):
-                print(f"⚠️ Schema inference failed, trying alternative approaches...")
-
-                # Try to read with option to handle corrupted files
-                try:
-                    df = (
-                        spark.read.option("mergeSchema", "true")
-                        .option("ignoreCorruptFiles", "true")
-                        .parquet(path)
-                    )
-                    count = df.count()
-                    print(
-                        f"✅ Successfully read {count:,} records with merge schema option"
-                    )
-                    return True, count
-
-                except Exception as merge_error:
-                    print(f"⚠️ Merge schema approach failed: {str(merge_error)}")
-
-                    # Try to read individual parquet files
-                    try:
-                        valid_files = []
-                        for file_path, file_size in parquet_files:
-                            if file_size > 0:  # Only try non-empty files
-                                try:
-                                    test_df = spark.read.parquet(file_path)
-                                    test_count = test_df.count()
-                                    if test_count > 0:
-                                        valid_files.append(file_path)
-                                        print(
-                                            f"✅ Valid file: {file_path} ({test_count:,} records)"
-                                        )
-                                except Exception:
-                                    print(f"⚠️ Corrupted file: {file_path}")
-
-                        if valid_files:
-                            # Read only valid files
-                            combined_df = spark.read.parquet(*valid_files)
-                            count = combined_df.count()
-                            print(
-                                f"✅ Successfully read {count:,} records from {len(valid_files)} valid files"
-                            )
-                            return True, count
-                        else:
-                            print(f"❌ No valid parquet files found")
-                            return False, 0
-
-                    except Exception as individual_error:
-                        print(
-                            f"❌ Individual file reading failed: {str(individual_error)}"
-                        )
-                        return False, 0
-            else:
-                # Re-raise non-schema related errors
-                raise schema_error
-
-    except Exception as e:
-        print(f"❌ Error reading data from {path}: {str(e)}")
-        print(f"❌ Exception type: {type(e).__name__}")
-        return False, 0
-
-
 def run_extraction_stage(
     spark: SparkSession, input_date: str, property_type: str, logger
 ) -> dict:
@@ -289,7 +161,7 @@ def run_daily_pipeline(
     """
     # Default values
     if input_date is None:
-        input_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        input_date = datetime.now().strftime("%Y-%m-%d")  # Sử dụng ngày hôm nay
 
     if property_types is None:
         property_types = ["house", "other"]
@@ -364,25 +236,6 @@ def run_daily_pipeline(
                             input_date,
                         ),
                     ]
-
-                    bronze_available = True
-                    # for path in bronze_paths:
-                    #     exists, count = check_data_availability(spark, path)
-                    #     if exists and count > 0:
-                    #         bronze_available = True
-                    #         logger.logger.info(
-                    #             f"✅ Bronze data found: {path} ({count:,} records)"
-                    #         )
-                    #     else:
-                    #         logger.logger.warning(f"⚠️ No bronze data: {path}")
-
-                    # if not bronze_available:
-                    #     logger.log_error(
-                    #         f"❌ No bronze data available for transformation for {property_type}"
-                    #     )
-                    #     property_success = False
-                    #     continue
-
                 transformation_results = run_transformation_stage(
                     spark, input_date, property_type, logger
                 )
@@ -409,24 +262,6 @@ def run_daily_pipeline(
                             input_date,
                         ),
                     ]
-
-                    # silver_available = False
-                    # for path in silver_paths:
-                    #     exists, count = check_data_availability(spark, path)
-                    #     if exists and count > 0:
-                    #         silver_available = True
-                    #         logger.logger.info(
-                    #             f"✅ Silver data found: {path} ({count:,} records)"
-                    #         )
-                    #     else:
-                    #         logger.logger.warning(f"⚠️ No silver data: {path}")
-
-                    # if not silver_available:
-                    #     logger.log_error(
-                    #         f"❌ No silver data available for unification for {property_type}"
-                    #     )
-                    #     property_success = False
-                    #     continue
 
                 unification_success = run_unification_stage(
                     spark, input_date, property_type, logger

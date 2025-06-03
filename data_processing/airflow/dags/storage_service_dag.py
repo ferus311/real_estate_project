@@ -22,25 +22,6 @@ dag = DAG(
     tags=["storage", "hdfs", "json", "raw-data"],
 )
 
-
-
-# Check Kafka and HDFS connectivity
-check_connectivity = BashOperator(
-    task_id="check_kafka_hdfs",
-    bash_command="""
-    echo "Checking Kafka connection..."
-    docker exec kafka1 bash -c 'nc -z kafka1 19092 -w 5' || \
-    (echo "Kafka is not available" && exit 1)
-
-    echo "Checking HDFS connection..."
-    docker exec namenode bash -c 'hdfs dfs -ls / >/dev/null 2>&1' || \
-    (echo "HDFS is not available" && exit 1)
-
-    echo "Connections OK"
-    """,
-    dag=dag,
-)
-
 # Run storage service to process data from Kafka and save to HDFS in JSON format (for raw data)
 run_storage_service = DockerOperator(
     task_id="run_storage_service_hdfs_json_raw",
@@ -96,4 +77,4 @@ verify_hdfs_data = BashOperator(
 )
 
 # Define the workflow
-check_connectivity >> run_storage_service >> verify_hdfs_data
+run_storage_service >> verify_hdfs_data

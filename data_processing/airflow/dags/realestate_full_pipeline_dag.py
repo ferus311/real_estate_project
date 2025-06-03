@@ -1,17 +1,20 @@
-from datetime import timedelta, datetime
 from airflow import DAG
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.sensors.external_task import ExternalTaskSensor
 from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
+
+
+
+from pendulum import timezone
+from datetime import timedelta, datetime
+
 
 default_args = {
     "owner": "airflow",
     "retries": 1,
     "retry_delay": timedelta(minutes=3),
-    "catchup": False,
     "depends_on_past": False,
-    "email_on_failure": True,
-    "email_on_retry": False,
 }
 
 dag = DAG(
@@ -19,31 +22,36 @@ dag = DAG(
     default_args=default_args,
     description="Pipeline đầy đủ: Crawler -> Storage -> Xử lý dữ liệu",
     schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày
-    # schedule_interval=None,  # Chạy thủ công (có thể đặt lịch nếu cần)
-    catchup=False,  # Không chạy các ngày đã bỏ lỡ
-    start_date=datetime(2025, 5, 1),  # Ngày bắt đầu DAG
+    catchup=False,  # Không chạy lại các ngày trước
+    start_date=datetime(2025, 6, 1, tzinfo=timezone("Asia/Ho_Chi_Minh")),  # Ngày bắt đầu DAG
     tags=["pipeline", "crawler", "storage", "processing"],
 )
 
-# Tham số ngày xử lý - lấy ngày để xử lý dữ liệu từ crawler
-processing_date = "{{ ds }}"
-# Kiểm tra trạng thái Kafka, HDFS, Spark
-check_services = BashOperator(
-    task_id="check_services",
+# Check Kafka and HDFS connectivity
+check_connectivity = BashOperator(
+    task_id="check_kafka_hdfs",
     bash_command="""
-    echo "Kiểm tra kết nối Kafka..."
+    echo "Checking Kafka connection..."
     docker exec kafka1 bash -c 'nc -z kafka1 19092 -w 5' || \
-    (echo "Kafka không khả dụng" && exit 1)
+    (echo "Kafka is not available" && exit 1)
 
-    echo "Kiểm tra kết nối HDFS..."
+    echo "Checking HDFS connection..."
     docker exec namenode bash -c 'hdfs dfs -ls / >/dev/null 2>&1' || \
-    (echo "HDFS không khả dụng" && exit 1)
+    (echo "HDFS is not available" && exit 1)
 
-    echo "Kiểm tra kết nối Spark..."
-    docker exec spark-master bash -c 'nc -z spark-master 7077 -w 5' || \
-    (echo "Spark không khả dụng" && exit 1)
+    echo "Connections OK"
+    """,
+    dag=dag,
+)
 
-    echo "Tất cả dịch vụ đều hoạt động bình thường"
+show_etl_processing_date = BashOperator(
+    task_id="show_etl_processing_date",
+    bash_command="""
+    echo "================= Thông tin pipeline ================="
+    echo "Ngày xử lý dữ liệu (execution_date): {{ ds }}"
+    echo "Ngày kết thúc khoảng thời gian: {{ data_interval_end | ds }}"
+    echo "Thời gian thực tế chạy DAG: $(date +%Y-%m-%d\ %H:%M:%S)"
+    echo "======================================================"
     """,
     dag=dag,
 )
@@ -54,7 +62,6 @@ trigger_api_crawler = TriggerDagRunOperator(
     trigger_dag_id="chotot_api_crawler",  # DAG API crawler của Chotot
     wait_for_completion=True,  # Đợi crawler hoàn thành
     poke_interval=60,  # Kiểm tra mỗi 60 giây
-    execution_date="{{ execution_date }}",
     reset_dag_run=True,  # Reset nếu DAG đã tồn tại
     dag=dag,
 )
@@ -65,7 +72,6 @@ trigger_playwright_crawler = TriggerDagRunOperator(
     trigger_dag_id="batdongsan_playwright_crawler",  # DAG Playwright crawler của Batdongsan
     wait_for_completion=True,  # Đợi crawler hoàn thành
     poke_interval=60,  # Kiểm tra mỗi 60 giây
-    execution_date="{{ execution_date }}",
     reset_dag_run=True,  # Reset nếu DAG đã tồn tại
     dag=dag,
 )
@@ -76,7 +82,6 @@ trigger_storage = TriggerDagRunOperator(
     trigger_dag_id="storage_service_hdfs_json_raw",  # ID của DAG storage
     wait_for_completion=True,  # Đợi storage hoàn thành
     poke_interval=60,  # Kiểm tra mỗi 60 giây
-    execution_date="{{ execution_date }}",
     reset_dag_run=True,  # Reset nếu DAG đã tồn tại
     dag=dag,
 )
@@ -95,33 +100,8 @@ trigger_data_processing = TriggerDagRunOperator(
     wait_for_completion=True,  # Đợi xử lý hoàn thành
     poke_interval=60,  # Kiểm tra mỗi 60 giây
     reset_dag_run=True,  # Reset nếu DAG đã tồn tại
-    conf={"processing_date": processing_date},  # Truyền ngày xử lý
     dag=dag,
 )
-
-# Kiểm tra xem toàn bộ pipeline đã hoàn thành thành công chưa
-# verify_pipeline = BashOperator(
-#     task_id="verify_pipeline",
-#     bash_command=f"""
-#     echo "================= BÁO CÁO TOÀN BỘ PIPELINE - NGÀY {processing_date} ================="
-
-#     # Kiểm tra số lượng file ở các layer dữ liệu trong HDFS
-#     RAW_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate/raw -name "*_{processing_date.replace('-', '')}.json" | wc -l')
-#     GOLD_FILES=$(docker exec namenode bash -c 'hdfs dfs -find /data/realestate/processed/gold -name "*.parquet" -path "*{processing_date}*" | wc -l')
-
-#     echo "Số lượng file ở Raw Layer: $RAW_FILES"
-#     echo "Số lượng file ở Gold Layer: $GOLD_FILES"
-
-#     if [ "$GOLD_FILES" -eq "0" ]; then
-#         echo "CẢNH BÁO: Pipeline không hoàn thành thành công!"
-#         echo "Hãy kiểm tra logs để xác định vấn đề."
-#         exit 1
-#     else
-#         echo "Pipeline hoàn tất thành công! Dữ liệu đã sẵn sàng để sử dụng."
-#     fi
-#     """,
-#     dag=dag,
-# )
 
 # Định nghĩa luồng công việc
 # 1. Kiểm tra dịch vụ
@@ -131,7 +111,8 @@ trigger_data_processing = TriggerDagRunOperator(
 # 5. Kích hoạt DAG xử lý dữ liệu
 # 6. Xác minh toàn bộ pipeline
 (
-    check_services
+    show_etl_processing_date
+    >> check_connectivity
     >> [trigger_api_crawler, trigger_playwright_crawler]
     >> trigger_storage
     >> wait_for_storage

@@ -18,6 +18,7 @@ dag = DAG(
     description="DAG crawler Playwright Badongsan",
     schedule_interval=None,
     start_date=days_ago(1),
+    catchup=False,
     tags=["crawler", "batdongsan", "playwright"],
 )
 
@@ -42,7 +43,7 @@ run_list_crawler = DockerOperator(
         "SOURCE": "batdongsan",
         "CRAWLER_TYPE": "playwright",
         "START_PAGE": "1",
-        "END_PAGE": "400",
+        "END_PAGE": "200",
         "OUTPUT_TOPIC": "property-urls",
         "MAX_CONCURRENT": "10",
         "STOP_ON_EMPTY": "true",

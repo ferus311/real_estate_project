@@ -33,3 +33,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+**/.ipnb*/**/*.ipynb
+**/ipynb_*/
+**/notebooks/ipynb_checkpoints/
+**/.ipynb_checkpoints
+**/__pycache__/

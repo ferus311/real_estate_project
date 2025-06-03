@@ -37,8 +37,3 @@ RUN chmod +x /app/entrypoint.sh
 
 # Quay trở lại user không phải root để tăng tính bảo mật
 USER root
-
-# # Sử dụng entrypoint script thay vì gọi trực tiếp spark-submit
-# ENTRYPOINT ["/app/entrypoint.sh"]
-# # Mặc định là chạy daily_processing.py nếu không có tham số nào được truyền vào
-# CMD ["daily_processing.py --date 2025-05-22 --property-types house"]

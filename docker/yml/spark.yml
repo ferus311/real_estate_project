@@ -18,8 +18,7 @@ x-spark-common: &spark-common
         - ../../data_processing/spark/jobs:/opt/bitnami/spark/jobs
         - ../../data_processing/spark/common:/opt/bitnami/spark/common
         - ../../data_processing/spark/pipelines:/opt/bitnami/spark/pipelines
-        # - ../../data_processing/spark/conf:/opt/bitnami/spark/conf
-        # - ../../data_processing/spark/logs:/opt/bitnami/spark/logs
+
 
 services:
     spark-master:
@@ -42,15 +41,15 @@ services:
         depends_on:
             - spark-master
 
-    # spark-worker-2:
-    #     <<: *spark-common
-    #     container_name: spark-worker2
-    #     environment:
-    #         - SPARK_MODE=worker
-    #         - SPARK_MASTER_URL=spark://spark-master:7077
-    #         - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    #     depends_on:
-    #         - spark-master
+    spark-worker-2:
+        <<: *spark-common
+        container_name: spark-worker2
+        environment:
+            - SPARK_MODE=worker
+            - SPARK_MASTER_URL=spark://spark-master:7077
+            - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+        depends_on:
+            - spark-master
 
     jupyter:
         build:
@@ -85,7 +84,6 @@ services:
             - ../../data_processing/spark/pipelines:/app/pipelines
         depends_on:
             - spark-master
-        restart: unless-stopped
 
 networks:
     hdfs_network:
