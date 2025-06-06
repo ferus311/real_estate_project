@@ -1,5 +1,6 @@
 """
-Chuyển đổi dữ liệu Chotot với xử lý outliers và smart imputation (Bronze → Silver)
+Chuyển đổi dữ liệu Chotot với FLAG data quality issues (Bronze → Silver)
+THEO KIẾN TRÚC MEDALLION ĐÚNG: Bronze->Silver KHÔNG loại bỏ data, KHÔNG impute data, chỉ flag issues
 """
 
 from pyspark.sql import SparkSession, DataFrame
@@ -19,7 +20,7 @@ from pyspark.sql.functions import (
     udf,
     length,
     avg,
-    count,
+    count as sql_count,
     percentile_approx,
     stddev,
     min as spark_min,
@@ -29,6 +30,8 @@ from pyspark.sql.functions import (
     isnull,
     isnan,
     from_unixtime,
+    concat_ws,
+    array,
 )
 from pyspark.sql.types import StringType, DoubleType, BooleanType
 
@@ -53,76 +56,123 @@ from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
 
 
-# ===================== OUTLIER DETECTION AND REMOVAL =====================
+# ===================== DATA QUALITY FLAGGING (MEDALLION ARCHITECTURE) =====================
 
 
-def detect_and_remove_outliers(df: DataFrame) -> DataFrame:
+def flag_data_quality_issues(df: DataFrame) -> DataFrame:
     """
-    Detect and remove outliers using business rules and statistical methods for Chotot data
+    FLAG data quality issues instead of removing or imputing data (TRUE Medallion Architecture)
+    Bronze → Silver: Preserve ALL data including NULLs, only add quality flags
     """
-    logger = SparkJobLogger("chotot_outlier_detection")
+    logger = SparkJobLogger("data_quality_flagging")
 
     original_count = df.count()
-    logger.logger.info(f"Original dataset: {original_count:,} records")
-
-    # Step 1: Business Logic Outliers (Hard thresholds for Vietnam real estate)
-    business_filtered = df.filter(
-        # Price reasonable range (30M - 200B VND) - Chotot has more diverse price range
-        (
-            col("price").isNull()
-            | ((col("price") >= 30_000_000) & (col("price") <= 200_000_000_000))
-        )
-        &
-        # Area reasonable range (5 - 10000 m²) - Chotot includes land plots
-        (col("area").isNull() | ((col("area") >= 5) & (col("area") <= 10000)))
-        &
-        # Price per m2 reasonable range (200K - 2B VND/m²) - Wider range for land
-        (
-            col("price_per_m2").isNull()
-            | (
-                (col("price_per_m2") >= 200_000)
-                & (col("price_per_m2") <= 2_000_000_000)
-            )
-        )
-        &
-        # Geographic bounds (Vietnam coordinates)
-        (
-            col("latitude").isNull()
-            | ((col("latitude") >= 8.0) & (col("latitude") <= 23.5))
-        )
-        & (
-            col("longitude").isNull()
-            | ((col("longitude") >= 102.0) & (col("longitude") <= 110.0))
-        )
-        &
-        # Bedroom/Bathroom reasonable ranges (allow 0 for land)
-        (col("bedroom").isNull() | ((col("bedroom") >= 0) & (col("bedroom") <= 20)))
-        & (
-            col("bathroom").isNull()
-            | ((col("bathroom") >= 0) & (col("bathroom") <= 15))
-        )
-        &
-        # Dimensions reasonable ranges
-        (col("length").isNull() | ((col("length") >= 1) & (col("length") <= 1000)))
-        & (col("width").isNull() | ((col("width") >= 1) & (col("width") <= 1000)))
-        & (
-            col("living_size").isNull()
-            | ((col("living_size") >= 5) & (col("living_size") <= 5000))
-        )
-    )
-
-    business_count = business_filtered.count()
-    business_removed = original_count - business_count
     logger.logger.info(
-        f"After business rules: {business_count:,} records "
-        f"(removed {business_removed:,}, {business_removed/original_count*100:.1f}%)"
+        f"📊 Original dataset: {original_count:,} records - PRESERVING ALL DATA INCLUDING NULLS"
     )
 
-    # Step 2: Statistical Outliers (IQR method) for key fields
-    df_with_flags = business_filtered
+    # ===== BUSINESS LOGIC FLAGS =====
+    logger.logger.info("🏢 Adding business logic flags...")
 
-    # Price outliers using IQR
-    price_data = business_filtered.filter(col("price").isNotNull())
+    # Price business flag
+    df_flagged = df.withColumn(
+        "price_business_flag",
+        when(col("price").isNull(), lit("MISSING_PRICE"))
+        .when(col("price") < 30_000_000, lit("PRICE_TOO_LOW"))  # < 30M VND for Chotot
+        .when(col("price") > 200_000_000_000, lit("PRICE_TOO_HIGH"))  # > 200B VND
+        .otherwise(lit("VALID")),
+    )
+
+    # Area business flag
+    df_flagged = df_flagged.withColumn(
+        "area_business_flag",
+        when(col("area").isNull(), lit("MISSING_AREA"))
+        .when(col("area") < 5, lit("AREA_TOO_SMALL"))  # < 5m² for land
+        .when(col("area") > 10000, lit("AREA_TOO_LARGE"))  # > 10000m²
+        .otherwise(lit("VALID")),
+    )
+
+    # Price per m2 business flag
+    df_flagged = df_flagged.withColumn(
+        "price_per_m2_business_flag",
+        when(col("price_per_m2").isNull(), lit("MISSING_PRICE_PER_M2"))
+        .when(col("price_per_m2") < 200_000, lit("PRICE_M2_TOO_LOW"))  # < 200K/m²
+        .when(col("price_per_m2") > 2_000_000_000, lit("PRICE_M2_TOO_HIGH"))  # > 2B/m²
+        .otherwise(lit("VALID")),
+    )
+
+    # Coordinates flag
+    df_flagged = df_flagged.withColumn(
+        "coordinates_flag",
+        when(
+            col("latitude").isNull() | col("longitude").isNull(),
+            lit("MISSING_COORDINATES"),
+        )
+        .when(
+            (col("latitude") < 8.0) | (col("latitude") > 23.5),
+            lit("INVALID_LATITUDE"),  # Vietnam bounds
+        )
+        .when(
+            (col("longitude") < 102.0) | (col("longitude") > 110.0),
+            lit("INVALID_LONGITUDE"),  # Vietnam bounds
+        )
+        .otherwise(lit("VALID")),
+    )
+
+    # Bedroom business flag (allow NULL - no imputation)
+    df_flagged = df_flagged.withColumn(
+        "bedroom_business_flag",
+        when(
+            col("bedroom").isNull(),
+            lit("MISSING_BEDROOM"),  # Keep as missing, don't impute
+        )
+        .when(col("bedroom") < 0, lit("BEDROOM_NEGATIVE"))
+        .when(col("bedroom") > 20, lit("BEDROOM_TOO_MANY"))
+        .otherwise(lit("VALID")),
+    )
+
+    # Bathroom business flag (allow NULL - no imputation)
+    df_flagged = df_flagged.withColumn(
+        "bathroom_business_flag",
+        when(
+            col("bathroom").isNull(),
+            lit("MISSING_BATHROOM"),  # Keep as missing, don't impute
+        )
+        .when(col("bathroom") < 0, lit("BATHROOM_NEGATIVE"))
+        .when(col("bathroom") > 15, lit("BATHROOM_TOO_MANY"))
+        .otherwise(lit("VALID")),
+    )
+
+    # Dimensions flags (Chotot specific)
+    df_flagged = (
+        df_flagged.withColumn(
+            "length_business_flag",
+            when(col("length").isNull(), lit("MISSING_LENGTH"))
+            .when(col("length") < 1, lit("LENGTH_TOO_SMALL"))
+            .when(col("length") > 1000, lit("LENGTH_TOO_LARGE"))
+            .otherwise(lit("VALID")),
+        )
+        .withColumn(
+            "width_business_flag",
+            when(col("width").isNull(), lit("MISSING_WIDTH"))
+            .when(col("width") < 1, lit("WIDTH_TOO_SMALL"))
+            .when(col("width") > 1000, lit("WIDTH_TOO_LARGE"))
+            .otherwise(lit("VALID")),
+        )
+        .withColumn(
+            "living_size_business_flag",
+            when(col("living_size").isNull(), lit("MISSING_LIVING_SIZE"))
+            .when(col("living_size") < 5, lit("LIVING_SIZE_TOO_SMALL"))
+            .when(col("living_size") > 5000, lit("LIVING_SIZE_TOO_LARGE"))
+            .otherwise(lit("VALID")),
+        )
+    )
+
+    # ===== STATISTICAL OUTLIER FLAGS (IQR METHOD) =====
+    logger.logger.info("📈 Adding statistical outlier flags...")
+
+    # Price outliers (IQR method) - only for non-null values
+    price_data = df_flagged.filter(col("price").isNotNull() & (col("price") > 0))
     if price_data.count() > 100:
         price_quartiles = price_data.select(
             percentile_approx("price", 0.25).alias("q1"),
@@ -130,28 +180,33 @@ def detect_and_remove_outliers(df: DataFrame) -> DataFrame:
         ).collect()[0]
 
         price_iqr = price_quartiles["q3"] - price_quartiles["q1"]
-        price_lower = (
-            price_quartiles["q1"] - 2.0 * price_iqr
-        )  # Use 2.0 for less aggressive filtering
+        price_lower = price_quartiles["q1"] - 2.0 * price_iqr  # 2.0 for less aggressive
         price_upper = price_quartiles["q3"] + 2.0 * price_iqr
 
-        df_with_flags = df_with_flags.withColumn(
-            "price_outlier",
-            when(
-                col("price").isNotNull()
-                & ((col("price") < price_lower) | (col("price") > price_upper)),
-                lit(True),
-            ).otherwise(lit(False)),
+        df_flagged = df_flagged.withColumn(
+            "price_statistical_flag",
+            when(col("price").isNull(), lit("MISSING_PRICE"))
+            .when(
+                col("price").isNotNull() & (col("price") < price_lower),
+                lit("STATISTICAL_OUTLIER_LOW"),
+            )
+            .when(
+                col("price").isNotNull() & (col("price") > price_upper),
+                lit("STATISTICAL_OUTLIER_HIGH"),
+            )
+            .otherwise(lit("NORMAL")),
         )
 
         logger.logger.info(
-            f"Price IQR bounds: {price_lower/1_000_000:.0f}M - {price_upper/1_000_000_000:.1f}B VND"
+            f"📊 Price IQR bounds: {price_lower/1_000_000:.0f}M - {price_upper/1_000_000_000:.1f}B VND"
         )
     else:
-        df_with_flags = df_with_flags.withColumn("price_outlier", lit(False))
+        df_flagged = df_flagged.withColumn(
+            "price_statistical_flag", lit("INSUFFICIENT_DATA")
+        )
 
-    # Area outliers using IQR
-    area_data = business_filtered.filter(col("area").isNotNull())
+    # Area outliers (IQR method) - only for non-null values
+    area_data = df_flagged.filter(col("area").isNotNull() & (col("area") > 0))
     if area_data.count() > 100:
         area_quartiles = area_data.select(
             percentile_approx("area", 0.25).alias("q1"),
@@ -162,350 +217,343 @@ def detect_and_remove_outliers(df: DataFrame) -> DataFrame:
         area_lower = area_quartiles["q1"] - 2.0 * area_iqr
         area_upper = area_quartiles["q3"] + 2.0 * area_iqr
 
-        df_with_flags = df_with_flags.withColumn(
-            "area_outlier",
-            when(
-                col("area").isNotNull()
-                & ((col("area") < area_lower) | (col("area") > area_upper)),
-                lit(True),
-            ).otherwise(lit(False)),
+        df_flagged = df_flagged.withColumn(
+            "area_statistical_flag",
+            when(col("area").isNull(), lit("MISSING_AREA"))
+            .when(
+                col("area").isNotNull() & (col("area") < area_lower),
+                lit("STATISTICAL_OUTLIER_LOW"),
+            )
+            .when(
+                col("area").isNotNull() & (col("area") > area_upper),
+                lit("STATISTICAL_OUTLIER_HIGH"),
+            )
+            .otherwise(lit("NORMAL")),
         )
 
-        logger.logger.info(f"Area IQR bounds: {area_lower:.0f} - {area_upper:.0f} m²")
+        logger.logger.info(
+            f"📊 Area IQR bounds: {area_lower:.0f} - {area_upper:.0f} m²"
+        )
     else:
-        df_with_flags = df_with_flags.withColumn("area_outlier", lit(False))
+        df_flagged = df_flagged.withColumn(
+            "area_statistical_flag", lit("INSUFFICIENT_DATA")
+        )
 
-    # Step 3: Relationship-based outliers (price vs area)
-    df_with_flags = df_with_flags.withColumn(
-        "relationship_outlier",
+    # ===== RELATIONSHIP-BASED FLAGS =====
+    logger.logger.info("🔗 Adding relationship validation flags...")
+
+    df_flagged = df_flagged.withColumn(
+        "price_area_relationship_flag",
+        when(col("price").isNull() | col("area").isNull(), lit("MISSING_DATA"))
+        .when(
+            (col("price") / col("area")) < 100_000,
+            lit("PRICE_AREA_RATIO_TOO_LOW"),  # < 100K VND/m²
+        )
+        .when(
+            (col("price") / col("area")) > 1_000_000_000,
+            lit("PRICE_AREA_RATIO_TOO_HIGH"),  # > 1B VND/m²
+        )
+        .otherwise(lit("VALID")),
+    )
+
+    # ===== COMPREHENSIVE DATA QUALITY SUMMARY =====
+    logger.logger.info("📋 Creating comprehensive data quality summary...")
+
+    # Build quality issues array step by step to avoid complex concat_ws operation
+    df_flagged = df_flagged.withColumn(
+        "quality_issues_array",
+        array(
+            when(
+                col("price_business_flag") != "VALID",
+                concat(lit("PRICE: "), col("price_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("area_business_flag") != "VALID",
+                concat(lit("AREA: "), col("area_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("price_per_m2_business_flag") != "VALID",
+                concat(lit("PRICE_M2: "), col("price_per_m2_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("coordinates_flag") != "VALID",
+                concat(lit("COORDS: "), col("coordinates_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("bedroom_business_flag") != "VALID",
+                concat(lit("BEDROOM: "), col("bedroom_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("bathroom_business_flag") != "VALID",
+                concat(lit("BATHROOM: "), col("bathroom_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("length_business_flag") != "VALID",
+                concat(lit("LENGTH: "), col("length_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("width_business_flag") != "VALID",
+                concat(lit("WIDTH: "), col("width_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("living_size_business_flag") != "VALID",
+                concat(lit("LIVING_SIZE: "), col("living_size_business_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("price_statistical_flag").isin(
+                    ["STATISTICAL_OUTLIER_LOW", "STATISTICAL_OUTLIER_HIGH"]
+                ),
+                concat(lit("PRICE_STAT: "), col("price_statistical_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("area_statistical_flag").isin(
+                    ["STATISTICAL_OUTLIER_LOW", "STATISTICAL_OUTLIER_HIGH"]
+                ),
+                concat(lit("AREA_STAT: "), col("area_statistical_flag")),
+            ).otherwise(lit("")),
+            when(
+                col("price_area_relationship_flag") != "VALID",
+                concat(lit("PRICE_AREA: "), col("price_area_relationship_flag")),
+            ).otherwise(lit("")),
+        ),
+    )
+
+    # Create the concatenated quality issues string in a simpler way
+    df_flagged = df_flagged.withColumn(
+        "data_quality_issues_temp", concat_ws("; ", col("quality_issues_array"))
+    )
+
+    # Clean up empty quality issues and remove the temporary array column
+    df_flagged = df_flagged.withColumn(
+        "data_quality_issues",
         when(
-            col("price").isNotNull()
-            & col("area").isNotNull()
-            & (
-                (col("price") / col("area")) < 100_000
-            ),  # < 100K/m² (too cheap, might be error)
-            lit(True),
-        )
-        .when(
-            col("price").isNotNull()
-            & col("area").isNotNull()
-            & ((col("price") / col("area")) > 1_000_000_000),  # > 1B/m² (too expensive)
-            lit(True),
-        )
-        .otherwise(lit(False)),
+            (trim(col("data_quality_issues_temp")) == "")
+            | (
+                trim(col("data_quality_issues_temp")) == ";;;;;;;;;;;;"
+            ),  # All empty concatenated
+            lit("NO_ISSUES"),
+        ).otherwise(
+            regexp_replace(
+                col("data_quality_issues_temp"), "^;+|;+$", ""
+            )  # Remove leading/trailing semicolons
+        ),
+    ).drop("quality_issues_array", "data_quality_issues_temp")
+
+    # ===== DATA QUALITY SCORING (NO IMPUTATION IMPACT) =====
+    logger.logger.info("🎯 Computing quality scores...")
+
+    # Calculate individual component scores step by step to avoid complex when() chains
+    # Price score
+    df_flagged = df_flagged.withColumn(
+        "price_score",
+        when(col("price_business_flag") == "VALID", lit(10))
+        .when(col("price_business_flag") == "MISSING_PRICE", lit(0))
+        .otherwise(lit(3)),  # Business rule violation but data exists
     )
 
-    # Flag records that are outliers in multiple dimensions (more conservative)
-    df_with_flags = df_with_flags.withColumn(
-        "is_outlier",
-        (col("price_outlier") & col("area_outlier")) | col("relationship_outlier"),
+    # Area score
+    df_flagged = df_flagged.withColumn(
+        "area_score",
+        when(col("area_business_flag") == "VALID", lit(10))
+        .when(col("area_business_flag") == "MISSING_AREA", lit(0))
+        .otherwise(lit(3)),
     )
 
-    # Remove outliers but keep flagged data for analysis
-    clean_df = df_with_flags.filter(col("is_outlier") == False).drop(
-        "price_outlier", "area_outlier", "relationship_outlier", "is_outlier"
+    # Coordinates score
+    df_flagged = df_flagged.withColumn(
+        "coordinates_score",
+        when(col("coordinates_flag") == "VALID", lit(10))
+        .when(col("coordinates_flag") == "MISSING_COORDINATES", lit(0))
+        .otherwise(lit(2)),  # Invalid but present
     )
 
-    final_count = clean_df.count()
-    total_removed = original_count - final_count
-    logger.logger.info(
-        f"Final dataset: {final_count:,} records "
-        f"(total removed {total_removed:,}, {total_removed/original_count*100:.1f}%)"
+    # Bedroom score
+    df_flagged = df_flagged.withColumn(
+        "bedroom_score",
+        when(col("bedroom_business_flag") == "VALID", lit(8))
+        .when(
+            col("bedroom_business_flag") == "MISSING_BEDROOM", lit(0)
+        )  # No imputation penalty
+        .otherwise(lit(3)),
     )
 
-    return clean_df
-
-
-# ===================== SMART IMPUTATION =====================
-
-
-def smart_impute_bedroom_bathroom(df: DataFrame) -> DataFrame:
-    """
-    Smart imputation for bedroom and bathroom for Chotot data
-    """
-    logger = SparkJobLogger("chotot_smart_imputation")
-
-    # Step 1: Extract location information (simpler for Chotot)
-    df_with_city = df.withColumn(
-        "city_extracted",
-        when(
-            lower(col("location")).contains("hồ chí minh")
-            | lower(col("location")).contains("tp.hcm")
-            | lower(col("location")).contains("tphcm")
-            | lower(col("location")).contains("hcm")
-            | lower(col("location")).contains("sài gòn")
-            | lower(col("location")).contains("saigon"),
-            lit("Ho Chi Minh"),
-        )
+    # Bathroom score
+    df_flagged = df_flagged.withColumn(
+        "bathroom_score",
+        when(col("bathroom_business_flag") == "VALID", lit(7))
         .when(
-            lower(col("location")).contains("hà nội")
-            | lower(col("location")).contains("hanoi")
-            | lower(col("location")).contains("ha noi"),
-            lit("Hanoi"),
-        )
-        .when(
-            lower(col("location")).contains("đà nẵng")
-            | lower(col("location")).contains("da nang"),
-            lit("Da Nang"),
-        )
-        .when(
-            lower(col("location")).contains("cần thơ")
-            | lower(col("location")).contains("can tho"),
-            lit("Can Tho"),
-        )
-        .when(
-            lower(col("location")).contains("hải phòng")
-            | lower(col("location")).contains("hai phong"),
-            lit("Hai Phong"),
-        )
-        .otherwise(lit("Other")),
+            col("bathroom_business_flag") == "MISSING_BATHROOM", lit(0)
+        )  # No imputation penalty
+        .otherwise(lit(3)),
     )
 
-    # Step 2: Extract bedroom/bathroom from title and description (if available)
-    df_extracted = (
-        df_with_city.withColumn(
-            "title_desc_combined",
-            concat(
-                when(col("title").isNotNull(), lower(col("title"))).otherwise(lit("")),
-                lit(" "),
-                when(
-                    col("description").isNotNull(), lower(col("description"))
-                ).otherwise(lit("")),
+    # Dimensions score - simplified logic
+    df_flagged = (
+        df_flagged.withColumn(
+            "all_dimensions_valid",
+            (col("length_business_flag") == "VALID")
+            & (col("width_business_flag") == "VALID")
+            & (col("living_size_business_flag") == "VALID"),
+        )
+        .withColumn(
+            "all_dimensions_missing",
+            (col("length_business_flag") == "MISSING_LENGTH")
+            & (col("width_business_flag") == "MISSING_WIDTH")
+            & (col("living_size_business_flag") == "MISSING_LIVING_SIZE"),
+        )
+        .withColumn(
+            "dimensions_score",
+            when(col("all_dimensions_valid"), lit(10))
+            .when(col("all_dimensions_missing"), lit(0))
+            .otherwise(lit(5)),  # Partial data or some invalid
+        )
+        .drop("all_dimensions_valid", "all_dimensions_missing")
+    )
+
+    # Statistical score - simplified logic
+    df_flagged = (
+        df_flagged.withColumn(
+            "price_stat_normal", col("price_statistical_flag") == "NORMAL"
+        )
+        .withColumn("area_stat_normal", col("area_statistical_flag") == "NORMAL")
+        .withColumn(
+            "price_stat_missing", col("price_statistical_flag") == "MISSING_PRICE"
+        )
+        .withColumn("area_stat_missing", col("area_statistical_flag") == "MISSING_AREA")
+        .withColumn(
+            "price_stat_outlier",
+            col("price_statistical_flag").isin(
+                ["STATISTICAL_OUTLIER_LOW", "STATISTICAL_OUTLIER_HIGH"]
             ),
         )
         .withColumn(
-            "bedroom_from_text",
-            when(
-                col("title_desc_combined").rlike(r"(\d+)\s*(phòng\s*ngủ|pn|bedroom)"),
-                regexp_extract(
-                    col("title_desc_combined"), r"(\d+)\s*(?:phòng\s*ngủ|pn|bedroom)", 1
-                ).cast("double"),
-            ).otherwise(lit(None)),
+            "area_stat_outlier",
+            col("area_statistical_flag").isin(
+                ["STATISTICAL_OUTLIER_LOW", "STATISTICAL_OUTLIER_HIGH"]
+            ),
         )
         .withColumn(
-            "bathroom_from_text",
-            when(
-                col("title_desc_combined").rlike(
-                    r"(\d+)\s*(phòng\s*tắm|wc|toilet|bathroom)"
-                ),
-                regexp_extract(
-                    col("title_desc_combined"),
-                    r"(\d+)\s*(?:phòng\s*tắm|wc|toilet|bathroom)",
-                    1,
-                ).cast("double"),
-            ).otherwise(lit(None)),
+            "statistical_score",
+            when(col("price_stat_normal") & col("area_stat_normal"), lit(10))
+            .when(
+                col("price_stat_missing") | col("area_stat_missing"), lit(0)
+            )  # Missing key data
+            .when(col("price_stat_outlier") | col("area_stat_outlier"), lit(3))
+            .otherwise(lit(7)),  # Insufficient data cases
+        )
+        .drop(
+            "price_stat_normal",
+            "area_stat_normal",
+            "price_stat_missing",
+            "area_stat_missing",
+            "price_stat_outlier",
+            "area_stat_outlier",
         )
     )
 
-    # Step 3: Estimate from area and living_size
-    df_area_based = df_extracted.withColumn(
-        "bedroom_from_area",
-        when(
-            col("living_size").isNotNull() & (col("living_size") > 0),
-            # Use living_size if available (more accurate for bedrooms)
-            when(col("living_size") <= 25, lit(1))
-            .when(col("living_size") <= 45, lit(2))
-            .when(col("living_size") <= 70, lit(3))
-            .when(col("living_size") <= 100, lit(4))
-            .when(col("living_size") <= 150, lit(5))
-            .otherwise(lit(6)),
-        )
-        .when(
-            col("area").isNotNull() & (col("area") > 0),
-            # Fallback to total area
-            when(col("area") <= 30, lit(1))
-            .when(col("area") <= 60, lit(2))
-            .when(col("area") <= 100, lit(3))
-            .when(col("area") <= 150, lit(4))
-            .when(col("area") <= 250, lit(5))
-            .otherwise(lit(6)),
-        )
-        .otherwise(lit(None)),
-    ).withColumn(
-        "bathroom_from_area",
-        when(
-            col("living_size").isNotNull() & (col("living_size") > 0),
-            when(col("living_size") <= 35, lit(1))
-            .when(col("living_size") <= 70, lit(2))
-            .when(col("living_size") <= 120, lit(3))
-            .otherwise(lit(4)),
-        )
-        .when(
-            col("area").isNotNull() & (col("area") > 0),
-            when(col("area") <= 50, lit(1))
-            .when(col("area") <= 100, lit(2))
-            .when(col("area") <= 200, lit(3))
-            .otherwise(lit(4)),
-        )
-        .otherwise(lit(None)),
+    # Relationship score
+    df_flagged = df_flagged.withColumn(
+        "relationship_score",
+        when(col("price_area_relationship_flag") == "VALID", lit(10))
+        .when(col("price_area_relationship_flag") == "MISSING_DATA", lit(0))
+        .otherwise(lit(2)),
     )
 
-    # Step 4: Calculate group medians
-    df_grouped = df_area_based.withColumn(
-        "price_range",
-        when(col("price").isNull(), lit("unknown"))
-        .when(col("price") < 500_000_000, lit("under_500m"))  # Under 500M
-        .when(col("price") < 1_500_000_000, lit("500m_1.5b"))  # 500M-1.5B
-        .when(col("price") < 3_000_000_000, lit("1.5b_3b"))  # 1.5B-3B
-        .when(col("price") < 7_000_000_000, lit("3b_7b"))  # 3B-7B
-        .when(col("price") < 15_000_000_000, lit("7b_15b"))  # 7B-15B
-        .otherwise(lit("over_15b")),  # Over 15B
-    ).withColumn(
-        "area_range",
-        when(col("area").isNull(), lit("unknown"))
-        .when(col("area") < 30, lit("tiny"))  # < 30m²
-        .when(col("area") < 60, lit("small"))  # 30-60m²
-        .when(col("area") < 100, lit("medium"))  # 60-100m²
-        .when(col("area") < 200, lit("large"))  # 100-200m²
-        .when(col("area") < 500, lit("very_large"))  # 200-500m²
-        .otherwise(lit("huge")),  # > 500m²
+    # Overall quality score (0-100)
+    df_flagged = df_flagged.withColumn(
+        "data_quality_score",
+        col("price_score")
+        + col("area_score")
+        + col("coordinates_score")
+        + col("bedroom_score")
+        + col("bathroom_score")
+        + col("dimensions_score")
+        + col("statistical_score")
+        + col("relationship_score"),
     )
 
-    # Calculate medians by group (handle smaller sample sizes)
-    try:
-        bedroom_medians = (
-            df_grouped.filter(col("bedroom").isNotNull() & (col("bedroom") > 0))
-            .groupBy("city_extracted", "price_range", "area_range")
-            .agg(
-                percentile_approx("bedroom", 0.5).alias("bedroom_median"),
-                count("*").alias("bedroom_count"),
-            )
-            .filter(col("bedroom_count") >= 2)
-        )  # Lower threshold for Chotot
-
-        bathroom_medians = (
-            df_grouped.filter(col("bathroom").isNotNull() & (col("bathroom") > 0))
-            .groupBy("city_extracted", "price_range", "area_range")
-            .agg(
-                percentile_approx("bathroom", 0.5).alias("bathroom_median"),
-                count("*").alias("bathroom_count"),
-            )
-            .filter(col("bathroom_count") >= 2)
-        )
-    except:
-        bedroom_medians = spark.createDataFrame(
-            [],
-            "city_extracted string, price_range string, area_range string, bedroom_median double, bedroom_count long",
-        )
-        bathroom_medians = spark.createDataFrame(
-            [],
-            "city_extracted string, price_range string, area_range string, bathroom_median double, bathroom_count long",
-        )
-
-    # Join medians
-    df_with_medians = df_grouped.join(
-        bedroom_medians, ["city_extracted", "price_range", "area_range"], "left"
-    ).join(bathroom_medians, ["city_extracted", "price_range", "area_range"], "left")
-
-    # Overall medians as fallback
-    try:
-        overall_bedroom_median = (
-            df_with_medians.filter(col("bedroom").isNotNull() & (col("bedroom") > 0))
-            .select(percentile_approx("bedroom", 0.5))
-            .collect()[0][0]
-            or 2.0
-        )
-        overall_bathroom_median = (
-            df_with_medians.filter(col("bathroom").isNotNull() & (col("bathroom") > 0))
-            .select(percentile_approx("bathroom", 0.5))
-            .collect()[0][0]
-            or 1.0
-        )
-    except:
-        overall_bedroom_median = 2.0
-        overall_bathroom_median = 1.0
-
-    # Step 5: Apply smart filling logic with priority
-    df_imputed = df_with_medians.withColumn(
-        "bedroom_imputed",
-        when((col("bedroom").isNotNull()) & (col("bedroom") > 0), col("bedroom"))
-        .when(
-            col("bedroom_from_text").isNotNull()
-            & (col("bedroom_from_text") >= 1)
-            & (col("bedroom_from_text") <= 15),
-            col("bedroom_from_text"),
-        )
-        .when(col("bedroom_median").isNotNull(), col("bedroom_median"))
-        .when(col("bedroom_from_area").isNotNull(), col("bedroom_from_area"))
-        .otherwise(lit(overall_bedroom_median)),
-    ).withColumn(
-        "bathroom_imputed",
-        when((col("bathroom").isNotNull()) & (col("bathroom") > 0), col("bathroom"))
-        .when(
-            col("bathroom_from_text").isNotNull()
-            & (col("bathroom_from_text") >= 1)
-            & (col("bathroom_from_text") <= 8),
-            col("bathroom_from_text"),
-        )
-        .when(col("bathroom_median").isNotNull(), col("bathroom_median"))
-        .when(col("bathroom_from_area").isNotNull(), col("bathroom_from_area"))
-        .otherwise(lit(overall_bathroom_median)),
+    # Quality classification
+    df_flagged = df_flagged.withColumn(
+        "overall_quality_score",
+        when(col("data_quality_score") >= 70, lit("GOOD"))
+        .when(col("data_quality_score") >= 45, lit("FAIR"))
+        .otherwise(lit("POOR")),
     )
 
-    # Step 6: Validation rules (allow 0 for land plots)
-    df_validated = df_imputed.withColumn(
-        "bathroom_final",
-        when(
-            col("bathroom_imputed") > (col("bedroom_imputed") + 2),
-            col("bedroom_imputed"),
-        )  # More lenient
-        .when(col("bathroom_imputed") < 0, lit(0))
-        .when(col("bathroom_imputed") > 10, lit(4))
-        .otherwise(col("bathroom_imputed")),
-    ).withColumn(
-        "bedroom_final",
-        when((col("area") < 25) & (col("bedroom_imputed") > 2), lit(1))
-        .when((col("area") < 40) & (col("bedroom_imputed") > 3), lit(2))
-        .when(col("bedroom_imputed") < 0, lit(0))  # Allow 0 for land
-        .when(col("bedroom_imputed") > 15, lit(6))
-        .otherwise(col("bedroom_imputed")),
+    # Drop intermediate scoring columns
+    df_final = df_flagged.drop(
+        "price_score",
+        "area_score",
+        "coordinates_score",
+        "bedroom_score",
+        "bathroom_score",
+        "dimensions_score",
+        "statistical_score",
+        "relationship_score",
     )
 
-    # Clean up intermediate columns
-    result_df = (
-        df_validated.drop(
-            "title_desc_combined",
-            "bedroom_from_text",
-            "bathroom_from_text",
-            "bedroom_from_area",
-            "bathroom_from_area",
-            "price_range",
-            "area_range",
-            "bedroom_median",
-            "bathroom_median",
-            "bedroom_count",
-            "bathroom_count",
-            "bedroom_imputed",
-            "bathroom_imputed",
-            "city_extracted",
+    # ===== LOG QUALITY STATISTICS =====
+    # Use simple operations to avoid CodeGenerator compilation issues
+    logger.logger.info("📊 Computing data quality statistics...")
+
+    # Cache the dataframe to avoid recomputation
+    df_final.cache()
+
+    # Get total count first
+    total_records = df_final.count()
+
+    # Calculate quality distribution with simple filters to avoid CodeGen issues
+    good_quality_count = df_final.filter(col("overall_quality_score") == "GOOD").count()
+    fair_quality_count = df_final.filter(col("overall_quality_score") == "FAIR").count()
+    poor_quality_count = df_final.filter(col("overall_quality_score") == "POOR").count()
+
+    logger.logger.info("📊 DATA QUALITY SUMMARY (NO RECORDS REMOVED, NO IMPUTATION):")
+    if total_records > 0:
+        logger.logger.info(
+            f"   GOOD: {good_quality_count:,} records ({(good_quality_count/total_records)*100:.1f}%)"
         )
-        .withColumn("bedroom", col("bedroom_final"))
-        .withColumn("bathroom", col("bathroom_final"))
-        .drop("bedroom_final", "bathroom_final")
-    )
+        logger.logger.info(
+            f"   FAIR: {fair_quality_count:,} records ({(fair_quality_count/total_records)*100:.1f}%)"
+        )
+        logger.logger.info(
+            f"   POOR: {poor_quality_count:,} records ({(poor_quality_count/total_records)*100:.1f}%)"
+        )
 
-    # Log imputation results
-    original_bedroom_nulls = df.filter(
-        (col("bedroom").isNull()) | (col("bedroom") == 0)
+    # Log missing data statistics (preserved for Gold layer decisions)
+    # Use simple filter operations to avoid CodeGen compilation issues
+    logger.logger.info("📋 Computing missing data statistics...")
+
+    missing_bedroom = df_final.filter(col("bedroom").isNull()).count()
+    missing_bathroom = df_final.filter(col("bathroom").isNull()).count()
+    missing_price = df_final.filter(col("price").isNull()).count()
+    missing_area = df_final.filter(col("area").isNull()).count()
+    missing_coordinates = df_final.filter(
+        col("latitude").isNull() | col("longitude").isNull()
     ).count()
-    original_bathroom_nulls = df.filter(
-        (col("bathroom").isNull()) | (col("bathroom") == 0)
-    ).count()
-    final_bedroom_nulls = result_df.filter(
-        (col("bedroom").isNull()) | (col("bedroom") == 0)
-    ).count()
-    final_bathroom_nulls = result_df.filter(
-        (col("bathroom").isNull()) | (col("bathroom") == 0)
-    ).count()
+
+    logger.logger.info("📋 MISSING DATA PRESERVED FOR GOLD LAYER:")
+    logger.logger.info(f"   Missing bedrooms: {missing_bedroom:,}")
+    logger.logger.info(f"   Missing bathrooms: {missing_bathroom:,}")
+    logger.logger.info(f"   Missing prices: {missing_price:,}")
+    logger.logger.info(f"   Missing areas: {missing_area:,}")
+    logger.logger.info(f"   Missing coordinates: {missing_coordinates:,}")
+
+    # Calculate data quality issues count
+    issue_count = df_final.filter(col("data_quality_issues") != "NO_ISSUES").count()
+    no_issues_count = total_records - issue_count
 
     logger.logger.info(
-        f"Bedroom imputation: {original_bedroom_nulls} -> {final_bedroom_nulls} null/zero values"
+        f"📋 Records with quality issues: {issue_count:,} ({(issue_count/total_records)*100:.1f}%)"
     )
     logger.logger.info(
-        f"Bathroom imputation: {original_bathroom_nulls} -> {final_bathroom_nulls} null/zero values"
+        f"✅ Records with no issues: {no_issues_count:,} ({(no_issues_count/total_records)*100:.1f}%)"
     )
 
-    return result_df
+    logger.logger.info(
+        f"🎯 TRUE MEDALLION ARCHITECTURE: ALL {total_records:,} records preserved with original NULLs intact"
+    )
+
+    return df_final
 
 
 # ===================== MAIN TRANSFORMATION FUNCTION =====================
@@ -515,7 +563,8 @@ def transform_chotot_data(
     spark: SparkSession, input_date=None, property_type="house"
 ) -> DataFrame:
     """
-    Transform Chotot data from Bronze to Silver layer
+    Transform Chotot data from Bronze to Silver layer with TRUE Medallion Architecture
+    NO DATA REMOVAL, NO IMPUTATION - only flagging and standardization
     """
     logger = SparkJobLogger("transform_chotot_data")
     logger.start_job({"input_date": input_date, "property_type": property_type})
@@ -549,83 +598,67 @@ def transform_chotot_data(
         bronze_df = spark.read.parquet(bronze_file)
         logger.log_dataframe_info(bronze_df, "bronze_data")
 
-        # Step 1: Clean and convert numeric columns
-        logger.logger.info("Step 1: Cleaning numeric data...")
+        # Step 1: Clean and convert numeric columns (preserving nulls)
+        logger.logger.info("Step 1: Cleaning numeric data (preserving nulls)...")
         numeric_cleaned_df = (
             bronze_df.withColumn(
-                "area", regexp_replace(col("area"), "[^0-9\\.]", "").cast("double")
+                "area",
+                when(
+                    col("area").isNotNull(),
+                    regexp_replace(col("area"), "[^0-9\\.]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
-                "bathroom", regexp_replace(col("bathroom"), "[^0-9]", "").cast("double")
+                "bathroom",
+                when(
+                    col("bathroom").isNotNull(),
+                    regexp_replace(col("bathroom"), "[^0-9]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
-                "bedroom", regexp_replace(col("bedroom"), "[^0-9]", "").cast("double")
+                "bedroom",
+                when(
+                    col("bedroom").isNotNull(),
+                    regexp_replace(col("bedroom"), "[^0-9]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
                 "floor_count",
-                regexp_replace(col("floor_count"), "[^0-9]", "").cast("double"),
+                when(
+                    col("floor_count").isNotNull(),
+                    regexp_replace(col("floor_count"), "[^0-9]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
-                "length", regexp_replace(col("length"), "[^0-9\\.]", "").cast("double")
+                "length",
+                when(
+                    col("length").isNotNull(),
+                    regexp_replace(col("length"), "[^0-9\\.]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
-                "width", regexp_replace(col("width"), "[^0-9\\.]", "").cast("double")
+                "width",
+                when(
+                    col("width").isNotNull(),
+                    regexp_replace(col("width"), "[^0-9\\.]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn(
                 "living_size",
-                regexp_replace(col("living_size"), "[^0-9\\.]", "").cast("double"),
+                when(
+                    col("living_size").isNotNull(),
+                    regexp_replace(col("living_size"), "[^0-9\\.]", "").cast("double"),
+                ).otherwise(lit(None)),
             )
             .withColumn("latitude", col("latitude").cast("double"))
             .withColumn("longitude", col("longitude").cast("double"))
         )
 
-        # Step 2: Process price fields
-        logger.logger.info("Step 2: Processing price data...")
-        price_processed_df = (
-            numeric_cleaned_df.withColumn("price_text", trim(col("price")))
-            .withColumn(
-                "price",
-                when(
-                    lower(col("price_text")).contains("tỷ")
-                    | lower(col("price_text")).contains("ty"),
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                    * 1_000_000_000,
-                )
-                .when(
-                    lower(col("price_text")).contains("triệu")
-                    | lower(col("price_text")).contains("trieu"),
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                    * 1_000_000,
-                )
-                .otherwise(
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                ),
-            )
-            .withColumn("price_per_m2_text", trim(col("price_per_m2")))
-            .withColumn(
-                "price_per_m2",
-                # Chotot price_per_m2 is typically in millions VND
-                regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
-                * 1_000_000,
-            )
-            .drop("price_text", "price_per_m2_text")
-        )
+        # Step 2: Process price fields (preserving nulls)
+        logger.logger.info("Step 2: Processing price data (preserving nulls)...")
 
-        # Step 3: Process timestamps
-        logger.logger.info("Step 3: Processing timestamps...")
-        timestamp_df = price_processed_df.withColumn(
-            "crawl_timestamp", from_unixtime(col("crawl_timestamp")).cast("timestamp")
-        ).withColumn("posted_date", from_unixtime(col("posted_date")).cast("timestamp"))
-
-        # Step 4: Clean text fields
-        text_cleaned_df = (
-            timestamp_df.withColumn("location", trim(col("location")))
-            .withColumn("title", trim(col("title")))
-            .withColumn("description", trim(col("description")))
-        )
-
-        # Step 5: Calculate missing price_per_m2
-        calculated_df = text_cleaned_df.withColumn(
+        # Calculate price_per_m2 only when both price and area are available
+        calculated_df = numeric_cleaned_df.withColumn(
             "price_per_m2",
             when(
                 col("price_per_m2").isNull()
@@ -636,58 +669,34 @@ def transform_chotot_data(
             ).otherwise(col("price_per_m2")),
         )
 
-        # Step 6: Remove outliers
-        logger.logger.info("Step 6: Removing outliers...")
-        outlier_removed_df = detect_and_remove_outliers(calculated_df)
-
-        # Cache to break lineage and prevent code generation issues
-        outlier_removed_df.cache()
-        outlier_count = outlier_removed_df.count()
-        logger.logger.info(f"Cached after outlier removal: {outlier_count:,} records")
-
-        # Step 7: Smart imputation for bedroom/bathroom
-        logger.logger.info("Step 7: Smart imputation for bedroom/bathroom...")
-        imputed_df = smart_impute_bedroom_bathroom(outlier_removed_df)
-
-        # Cache after imputation to break lineage
-        imputed_df.cache()
-        imputed_count = imputed_df.count()
-        logger.logger.info(f"Cached after imputation: {imputed_count:,} records")
-
-        # Free memory from previous step
-        outlier_removed_df.unpersist()
-
-        # Step 8: Drop seller_info if exists (low analytical value)
-        columns_to_drop = []
-        if "seller_info" in imputed_df.columns:
-            columns_to_drop.append("seller_info")
-        if "seller_name" in imputed_df.columns and "seller_id" in imputed_df.columns:
-            # Keep seller_id but drop seller_name for privacy
-            columns_to_drop.append("seller_name")
-
-        if columns_to_drop:
-            imputed_df = imputed_df.drop(*columns_to_drop)
-
-        # Step 9: Add validation flags and metadata
-        logger.logger.info("Step 9: Adding validation and metadata...")
-
-        # Handle source column - either use existing source or rename data_source to source
-        final_df = imputed_df
-        if "source" not in imputed_df.columns and "data_source" in imputed_df.columns:
-            final_df = final_df.withColumnRenamed("data_source", "source")
-        elif "source" not in imputed_df.columns:
-            # If neither exists, add source column with default value
-            final_df = imputed_df.withColumn("source", lit("chotot"))
-
-        # Add missing fields that are expected by common schema
-        final_df = final_df.withColumn(
-            "facade_width", lit(None).cast(DoubleType())  # Batdongsan specific
-        ).withColumn(
-            "road_width", lit(None).cast(DoubleType())  # Batdongsan specific
+        # Step 3: FLAG data quality issues (NO REMOVAL, NO IMPUTATION)
+        logger.logger.info(
+            "Step 3: Flagging data quality issues (TRUE Medallion Architecture)..."
         )
+        flagged_df = flag_data_quality_issues(calculated_df)
 
+        # Step 4: Convert timestamps
+        logger.logger.info("Step 4: Converting timestamps...")
+        timestamp_df = flagged_df.withColumn(
+            "crawl_timestamp", to_timestamp(col("crawl_timestamp"))
+        ).withColumn("posted_date", to_timestamp(col("posted_date")))
+
+        # Step 5: Add metadata ONLY (no data modification)
+        logger.logger.info("Step 5: Adding metadata only...")
+
+        # Handle source column
+        pre_final_df = timestamp_df
+        if (
+            "source" not in timestamp_df.columns
+            and "data_source" in timestamp_df.columns
+        ):
+            pre_final_df = timestamp_df.withColumnRenamed("data_source", "source")
+        elif "source" not in timestamp_df.columns:
+            pre_final_df = timestamp_df.withColumn("source", lit("chotot"))
+
+        # Add final metadata (no quality modification)
         final_df = (
-            final_df.withColumn(
+            pre_final_df.withColumn(
                 "has_valid_price", col("price").isNotNull() & (col("price") > 0)
             )
             .withColumn("has_valid_area", col("area").isNotNull() & (col("area") > 0))
@@ -699,89 +708,131 @@ def transform_chotot_data(
                 "has_coordinates",
                 col("latitude").isNotNull() & col("longitude").isNotNull(),
             )
-            .withColumn(
-                "is_house_type",
-                col("bedroom").isNotNull()
-                & (col("bedroom") > 0),  # Distinguish from land
+        )
+
+        # Calculate traditional quality score step by step to avoid complex when() chains
+        final_df = (
+            final_df.withColumn(
+                "area_score_trad",
+                when(col("has_valid_area"), lit(20)).otherwise(lit(0)),
             )
             .withColumn(
-                "is_land_type",
-                (col("bedroom").isNull() | (col("bedroom") == 0))
-                & (col("bathroom").isNull() | (col("bathroom") == 0))
-                & col("area").isNotNull()
-                & (col("area") > 0),
+                "price_score_trad",
+                when(col("has_valid_price"), lit(20)).otherwise(lit(0)),
+            )
+            .withColumn(
+                "bedroom_score_trad",
+                when(
+                    col("bedroom").isNotNull() & (col("bedroom") > 0), lit(15)
+                ).otherwise(lit(0)),
+            )
+            .withColumn(
+                "bathroom_score_trad",
+                when(
+                    col("bathroom").isNotNull() & (col("bathroom") > 0), lit(15)
+                ).otherwise(lit(0)),
+            )
+            .withColumn(
+                "location_score_trad",
+                when(col("has_valid_location"), lit(15)).otherwise(lit(0)),
+            )
+            .withColumn(
+                "coords_score_trad",
+                when(col("has_coordinates"), lit(15)).otherwise(lit(0)),
+            )
+            .withColumn(
+                "traditional_quality_score",
+                col("area_score_trad")
+                + col("price_score_trad")
+                + col("bedroom_score_trad")
+                + col("bathroom_score_trad")
+                + col("location_score_trad")
+                + col("coords_score_trad"),
             )
             .withColumn("processing_timestamp", current_timestamp())
             .withColumn("processing_id", lit(processing_id))
-        )
-
-        # Step 10: Quality scoring (adapted for Chotot)
-        quality_df = final_df.withColumn(
-            "data_quality_score",
-            (when(col("has_valid_area"), lit(25)).otherwise(lit(0)))
-            + (when(col("has_valid_price"), lit(25)).otherwise(lit(0)))
-            + (
-                when(
-                    col("bedroom").isNotNull() | col("is_land_type"), lit(15)
-                ).otherwise(lit(0))
+            .drop(
+                "area_score_trad",
+                "price_score_trad",
+                "bedroom_score_trad",
+                "bathroom_score_trad",
+                "location_score_trad",
+                "coords_score_trad",
             )
-            + (
-                when(
-                    col("bathroom").isNotNull() | col("is_land_type"), lit(15)
-                ).otherwise(lit(0))
-            )
-            + (when(col("has_valid_location"), lit(10)).otherwise(lit(0)))
-            + (when(col("has_coordinates"), lit(10)).otherwise(lit(0))),
         )
 
-        # Step 11: Filter for minimum quality requirements
-        final_filtered_df = quality_df.filter(
-            col("has_valid_area")
-            & col("has_valid_price")
-            & col("has_valid_location")
-            & (col("data_quality_score") >= 50)  # Lower threshold for Chotot
-        ).drop(
-            "has_valid_price",
-            "has_valid_area",
-            "has_valid_location",
-            "has_coordinates",
-            "is_house_type",
-            "is_land_type",
+        # Drop helper columns
+        final_clean_df = final_df.drop(
+            "has_valid_price", "has_valid_area", "has_valid_location", "has_coordinates"
         )
 
-        logger.log_dataframe_info(final_filtered_df, "silver_data")
+        logger.log_dataframe_info(final_clean_df, "silver_data")
 
-        # Step 12: Write silver data
-        output_path = os.path.join(
-            silver_path, f"chotot_{input_date.replace('-', '')}.parquet"
-        )
+        # Step 6: Write ALL data to silver (NO FILTERING)
+        output_path = f"{silver_path}/chotot_{input_date.replace('-', '')}.parquet"
 
-        final_filtered_df.write.mode("overwrite").parquet(output_path)
-
-        final_count = final_filtered_df.count()
         logger.logger.info(
-            f"Successfully processed {final_count:,} silver records to {output_path}"
+            "🎯 WRITING ALL DATA TO SILVER LAYER (NO RECORDS REMOVED, NO IMPUTATION)"
+        )
+        final_clean_df.write.mode("overwrite").parquet(output_path)
+
+        final_count = final_clean_df.count()
+        logger.logger.info(
+            f"✅ Successfully processed ALL {final_count:,} records to {output_path}"
         )
 
-        # Log quality statistics
-        quality_stats = final_filtered_df.select(
-            avg("data_quality_score").alias("avg_quality"),
-            count(when(col("data_quality_score") >= 70, True)).alias(
-                "high_quality_count"
-            ),
-            count(when(col("data_quality_score") >= 85, True)).alias(
-                "premium_quality_count"
-            ),
+        # Log comprehensive preservation statistics using simple operations
+        logger.logger.info("📊 Computing final preservation metrics...")
+
+        # Cache the final dataframe for multiple operations
+        final_clean_df.cache()
+
+        # Calculate statistics using simple aggregations to avoid CodeGen issues
+        total_count = final_clean_df.count()
+
+        # Calculate quality metrics with simple filters
+        good_quality_count = final_clean_df.filter(
+            col("data_quality_score") >= 70
+        ).count()
+        fair_quality_count = final_clean_df.filter(
+            col("data_quality_score") >= 45
+        ).count()
+        no_issues_count = final_clean_df.filter(
+            col("data_quality_issues") == "NO_ISSUES"
+        ).count()
+
+        # Calculate preserved null counts
+        null_bedrooms_count = final_clean_df.filter(col("bedroom").isNull()).count()
+        null_bathrooms_count = final_clean_df.filter(col("bathroom").isNull()).count()
+
+        # Calculate average quality scores using simple operations
+        avg_quality_row = final_clean_df.select(avg("data_quality_score")).collect()[0]
+        avg_quality = avg_quality_row[0] if avg_quality_row[0] is not None else 0.0
+
+        avg_traditional_row = final_clean_df.select(
+            avg("traditional_quality_score")
         ).collect()[0]
-
-        logger.logger.info(
-            f"Quality metrics - Average: {quality_stats['avg_quality']:.1f}, "
-            f"High quality (≥70): {quality_stats['high_quality_count']:,}, "
-            f"Premium quality (≥85): {quality_stats['premium_quality_count']:,}"
+        avg_traditional_quality = (
+            avg_traditional_row[0] if avg_traditional_row[0] is not None else 0.0
         )
+
+        logger.logger.info("📊 FINAL PRESERVATION METRICS:")
+        logger.logger.info(f"   Total records processed: {total_count:,}")
+        logger.logger.info(f"   Average quality score: {avg_quality:.1f}/100")
+        logger.logger.info(
+            f"   Traditional quality score: {avg_traditional_quality:.1f}/100"
+        )
+        logger.logger.info(f"   Good quality (≥70): {good_quality_count:,}")
+        logger.logger.info(f"   Fair quality (≥45): {fair_quality_count:,}")
+        logger.logger.info(f"   No quality issues: {no_issues_count:,}")
+        logger.logger.info(f"   NULL bedrooms preserved: {null_bedrooms_count:,}")
+        logger.logger.info(f"   NULL bathrooms preserved: {null_bathrooms_count:,}")
+
+        # Uncache the dataframe
+        final_clean_df.unpersist()
 
         logger.end_job()
-        return final_filtered_df
+        return final_clean_df
 
     except Exception as e:
         logger.log_error("Error processing data", e)
@@ -790,7 +841,9 @@ def transform_chotot_data(
 
 def parse_args():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description="Transform Chotot Data to Silver")
+    parser = argparse.ArgumentParser(
+        description="Transform Chotot Data to Silver (TRUE Medallion)"
+    )
     parser.add_argument("--date", type=str, help="Processing date in YYYY-MM-DD format")
     parser.add_argument(
         "--property-type",
@@ -806,7 +859,7 @@ if __name__ == "__main__":
     args = parse_args()
 
     # Initialize Spark session
-    spark = create_spark_session("Transform Chotot Data")
+    spark = create_spark_session("Transform Chotot Data - TRUE Medallion")
 
     try:
         # Transform data

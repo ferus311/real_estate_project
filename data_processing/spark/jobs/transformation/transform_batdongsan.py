@@ -1,5 +1,6 @@
 """
-Chuyển đổi dữ liệu Batdongsan với xử lý outliers và smart imputation (Bronze → Silver)
+Chuyển đổi và chuẩn hóa dữ liệu Batdongsan (Bronze → Silver)
+Focus: Data type conversion, standardization, and normalization only
 """
 
 from pyspark.sql import SparkSession, DataFrame
@@ -16,18 +17,11 @@ from pyspark.sql.functions import (
     split,
     element_at,
     round as spark_round,
-    udf,
     length,
-    avg,
-    count,
-    percentile_approx,
-    stddev,
-    min as spark_min,
-    max as spark_max,
     regexp_extract,
     concat,
-    isnull,
-    isnan,
+    avg,
+    count,
 )
 from pyspark.sql.types import StringType, DoubleType, BooleanType
 
@@ -172,402 +166,141 @@ def map_legal_status(value):
     return "UNKNOWN"
 
 
-# ===================== OUTLIER DETECTION =====================
+# ===================== PRICE PROCESSING =====================
 
 
-def detect_and_remove_outliers(df: DataFrame) -> DataFrame:
-    """Detect and remove outliers using business rules and statistical methods"""
-    logger = SparkJobLogger("outlier_detection")
+def process_price_data(df: DataFrame) -> DataFrame:
+    """Process and standardize price information"""
+    logger = SparkJobLogger("price_processing")
 
-    original_count = df.count()
-    logger.logger.info(f"Original dataset: {original_count:,} records")
+    # Process main price field
+    df_price = df.withColumn("price_text", trim(col("price")))
 
-    # Business Logic Outliers
-    business_filtered = df.filter(
-        (
-            col("price").isNull()
-            | ((col("price") >= 50_000_000) & (col("price") <= 100_000_000_000))
+    # Check for negotiable prices
+    df_price = df_price.withColumn(
+        "is_negotiable",
+        when(
+            lower(col("price_text")).contains("thỏa thuận")
+            | lower(col("price_text")).contains("thoathuan"),
+            lit(True),
+        ).otherwise(lit(False)),
+    )
+
+    # Convert price based on unit (tỷ, triệu, etc.)
+    df_price = df_price.withColumn(
+        "price",
+        when(col("is_negotiable"), lit(None))
+        .when(
+            lower(col("price_text")).contains("tỷ")
+            | lower(col("price_text")).contains("ty"),
+            regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
+            * 1_000_000_000,
         )
-        & (col("area").isNull() | ((col("area") >= 10) & (col("area") <= 2000)))
-        & (
+        .when(
+            lower(col("price_text")).contains("triệu")
+            | lower(col("price_text")).contains("trieu"),
+            regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
+            * 1_000_000,
+        )
+        .otherwise(regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")),
+    )
+
+    # Process price per m2 field
+    df_price = df_price.withColumn("price_per_m2_text", trim(col("price_per_m2")))
+
+    df_price = df_price.withColumn(
+        "price_per_m2",
+        when(
+            lower(col("price_per_m2_text")).contains("tỷ"),
+            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
+            * 1_000_000_000,
+        )
+        .when(
+            lower(col("price_per_m2_text")).contains("triệu"),
+            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
+            * 1_000_000,
+        )
+        .otherwise(
+            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
+        ),
+    )
+
+    # Calculate price per m2 if both price and area are available and price_per_m2 is null
+    df_price = df_price.withColumn(
+        "price_per_m2",
+        when(
             col("price_per_m2").isNull()
-            | (
-                (col("price_per_m2") >= 500_000)
-                & (col("price_per_m2") <= 1_000_000_000)
-            )
-        )
-        & (
-            col("latitude").isNull()
-            | ((col("latitude") >= 8.0) & (col("latitude") <= 23.5))
-        )
-        & (
-            col("longitude").isNull()
-            | ((col("longitude") >= 102.0) & (col("longitude") <= 110.0))
-        )
-        & (col("bedroom").isNull() | ((col("bedroom") >= 1) & (col("bedroom") <= 15)))
-        & (
-            col("bathroom").isNull()
-            | ((col("bathroom") >= 1) & (col("bathroom") <= 10))
-        )
-    )
-
-    business_count = business_filtered.count()
-    logger.logger.info(f"After business rules: {business_count:,} records")
-
-    # Statistical Outliers (IQR method)
-    df_with_flags = business_filtered
-
-    # Price outliers
-    price_data = business_filtered.filter(col("price").isNotNull())
-    if price_data.count() > 100:
-        price_quartiles = price_data.select(
-            percentile_approx("price", 0.25).alias("q1"),
-            percentile_approx("price", 0.75).alias("q3"),
-        ).collect()[0]
-
-        price_iqr = price_quartiles["q3"] - price_quartiles["q1"]
-        price_lower = price_quartiles["q1"] - 1.5 * price_iqr
-        price_upper = price_quartiles["q3"] + 1.5 * price_iqr
-
-        df_with_flags = df_with_flags.withColumn(
-            "price_outlier",
-            when(
-                col("price").isNotNull()
-                & ((col("price") < price_lower) | (col("price") > price_upper)),
-                lit(True),
-            ).otherwise(lit(False)),
-        )
-    else:
-        df_with_flags = df_with_flags.withColumn("price_outlier", lit(False))
-
-    # Area outliers
-    area_data = business_filtered.filter(col("area").isNotNull())
-    if area_data.count() > 100:
-        area_quartiles = area_data.select(
-            percentile_approx("area", 0.25).alias("q1"),
-            percentile_approx("area", 0.75).alias("q3"),
-        ).collect()[0]
-
-        area_iqr = area_quartiles["q3"] - area_quartiles["q1"]
-        area_lower = area_quartiles["q1"] - 1.5 * area_iqr
-        area_upper = area_quartiles["q3"] + 1.5 * area_iqr
-
-        df_with_flags = df_with_flags.withColumn(
-            "area_outlier",
-            when(
-                col("area").isNotNull()
-                & ((col("area") < area_lower) | (col("area") > area_upper)),
-                lit(True),
-            ).otherwise(lit(False)),
-        )
-    else:
-        df_with_flags = df_with_flags.withColumn("area_outlier", lit(False))
-
-    # Relationship-based outliers
-    df_with_flags = df_with_flags.withColumn(
-        "relationship_outlier",
-        when(
-            col("price").isNotNull()
+            & col("price").isNotNull()
             & col("area").isNotNull()
-            & ((col("price") / col("area")) < 1_000_000),
-            lit(True),
-        )
-        .when(
-            col("price").isNotNull()
-            & col("area").isNotNull()
-            & ((col("price") / col("area")) > 500_000_000),
-            lit(True),
-        )
-        .otherwise(lit(False)),
+            & (col("area") > 0),
+            spark_round(col("price") / col("area"), 2),
+        ).otherwise(col("price_per_m2")),
     )
 
-    # Remove multi-dimensional outliers
-    df_with_flags = df_with_flags.withColumn(
-        "is_outlier",
-        (col("price_outlier") & col("area_outlier")) | col("relationship_outlier"),
-    )
-
-    clean_df = df_with_flags.filter(col("is_outlier") == False).drop(
-        "price_outlier", "area_outlier", "relationship_outlier", "is_outlier"
-    )
-
-    final_count = clean_df.count()
-    total_removed = original_count - final_count
-    logger.logger.info(
-        f"Final dataset: {final_count:,} records "
-        f"(removed {total_removed:,}, {total_removed/original_count*100:.1f}%)"
-    )
-
-    return clean_df
+    logger.logger.info("Price processing completed")
+    return df_price.drop("price_text", "price_per_m2_text")
 
 
-# ===================== SMART IMPUTATION =====================
+# ===================== COORDINATE VALIDATION =====================
 
 
-def smart_impute_bedroom_bathroom(df: DataFrame) -> DataFrame:
-    """Smart imputation for bedroom and bathroom using multiple strategies - optimized to prevent code generation issues"""
-    logger = SparkJobLogger("smart_imputation")
+def validate_coordinates(df: DataFrame) -> DataFrame:
+    """Validate and clean coordinate data for Vietnam region"""
+    logger = SparkJobLogger("coordinate_validation")
 
-    # Step 1: Extract city information and cache
-    logger.logger.info("Step 1: City extraction...")
-    df_with_city = df.withColumn(
-        "city_extracted",
+    # Valid coordinates for Vietnam: Lat 8.0-23.5, Lon 102.0-110.0
+    df_validated = df.withColumn(
+        "latitude",
         when(
-            lower(col("location")).contains("hồ chí minh")
-            | lower(col("location")).contains("tp.hcm")
-            | lower(col("location")).contains("tphcm")
-            | lower(col("location")).contains("hcm"),
-            lit("Ho Chi Minh"),
-        )
-        .when(
-            lower(col("location")).contains("hà nội")
-            | lower(col("location")).contains("hanoi"),
-            lit("Hanoi"),
-        )
-        .otherwise(lit("Other")),
+            (col("latitude") >= 8.0) & (col("latitude") <= 23.5), col("latitude")
+        ).otherwise(lit(None)),
+    ).withColumn(
+        "longitude",
+        when(
+            (col("longitude") >= 102.0) & (col("longitude") <= 110.0), col("longitude")
+        ).otherwise(lit(None)),
     )
 
-    # Cache to break lineage
-    df_with_city.cache()
-    logger.logger.info(f"City extraction cached: {df_with_city.count():,} records")
-
-    # Step 2: Text extraction - simplified
-    logger.logger.info("Step 2: Text extraction...")
-    df_extracted = extract_bedroom_bathroom_from_text(df_with_city)
-
-    # Step 3: Area-based estimation
-    logger.logger.info("Step 3: Area-based estimation...")
-    df_area_based = add_area_based_estimates(df_extracted)
-
-    # Step 4: Group-based medians calculation
-    logger.logger.info("Step 4: Calculating group medians...")
-    df_with_medians = calculate_and_join_medians(df_area_based)
-
-    # Step 5: Apply final imputation logic
-    logger.logger.info("Step 5: Final imputation...")
-    result_df = apply_final_imputation_logic(df_with_medians)
-
-    # Clean up intermediate DataFrames
-    df_with_city.unpersist()
-
-    return result_df
+    logger.logger.info("Coordinate validation completed")
+    return df_validated
 
 
-def extract_bedroom_bathroom_from_text(df: DataFrame) -> DataFrame:
-    """Extract bedroom/bathroom info from text fields"""
-    return (
+# ===================== DATA TYPE CONVERSION =====================
+
+
+def convert_data_types(df: DataFrame) -> DataFrame:
+    """Convert and clean data types for standardization"""
+    logger = SparkJobLogger("data_type_conversion")
+
+    # Convert numeric fields with proper cleaning
+    numeric_df = (
         df.withColumn(
-            "title_desc_combined",
-            concat(
-                when(col("title").isNotNull(), lower(col("title"))).otherwise(lit("")),
-                lit(" "),
-                when(
-                    col("description").isNotNull(), lower(col("description"))
-                ).otherwise(lit("")),
-            ),
+            "area", regexp_replace(col("area"), "[^0-9\\.]", "").cast("double")
         )
         .withColumn(
-            "bedroom_from_text",
-            when(
-                col("title_desc_combined").rlike(r"(\d+)\s*(phòng\s*ngủ|pn|bedroom)"),
-                regexp_extract(
-                    col("title_desc_combined"), r"(\d+)\s*(?:phòng\s*ngủ|pn|bedroom)", 1
-                ).cast("double"),
-            ).otherwise(lit(None)),
+            "bathroom", regexp_replace(col("bathroom"), "[^0-9]", "").cast("double")
         )
         .withColumn(
-            "bathroom_from_text",
-            when(
-                col("title_desc_combined").rlike(
-                    r"(\d+)\s*(phòng\s*tắm|wc|toilet|bathroom)"
-                ),
-                regexp_extract(
-                    col("title_desc_combined"),
-                    r"(\d+)\s*(?:phòng\s*tắm|wc|toilet|bathroom)",
-                    1,
-                ).cast("double"),
-            ).otherwise(lit(None)),
+            "bedroom", regexp_replace(col("bedroom"), "[^0-9]", "").cast("double")
         )
+        .withColumn(
+            "floor_count",
+            regexp_replace(col("floor_count"), "[^0-9]", "").cast("double"),
+        )
+        .withColumn(
+            "facade_width",
+            regexp_replace(col("facade_width"), "[^0-9\\.]", "").cast("double"),
+        )
+        .withColumn(
+            "road_width",
+            regexp_replace(col("road_width"), "[^0-9\\.]", "").cast("double"),
+        )
+        .withColumn("latitude", col("latitude").cast("double"))
+        .withColumn("longitude", col("longitude").cast("double"))
     )
 
-
-def add_area_based_estimates(df: DataFrame) -> DataFrame:
-    """Add estimates based on area"""
-    return df.withColumn(
-        "bedroom_from_area",
-        when(
-            col("area").isNotNull(),
-            when(col("area") <= 30, lit(1))
-            .when(col("area") <= 50, lit(2))
-            .when(col("area") <= 80, lit(3))
-            .when(col("area") <= 120, lit(4))
-            .when(col("area") <= 200, lit(5))
-            .otherwise(lit(6)),
-        ).otherwise(lit(None)),
-    ).withColumn(
-        "bathroom_from_area",
-        when(
-            col("area").isNotNull(),
-            when(col("area") <= 40, lit(1))
-            .when(col("area") <= 80, lit(2))
-            .when(col("area") <= 150, lit(3))
-            .otherwise(lit(4)),
-        ).otherwise(lit(None)),
-    )
-
-
-def calculate_and_join_medians(df: DataFrame) -> DataFrame:
-    """Calculate group-based medians and join back"""
-    # Create range columns
-    df_grouped = df.withColumn(
-        "price_range",
-        when(col("price").isNull(), lit("unknown"))
-        .when(col("price") < 1_000_000_000, lit("under_1b"))
-        .when(col("price") < 3_000_000_000, lit("1b_3b"))
-        .when(col("price") < 5_000_000_000, lit("3b_5b"))
-        .when(col("price") < 10_000_000_000, lit("5b_10b"))
-        .otherwise(lit("over_10b")),
-    ).withColumn(
-        "area_range",
-        when(col("area").isNull(), lit("unknown"))
-        .when(col("area") < 50, lit("small"))
-        .when(col("area") < 100, lit("medium"))
-        .when(col("area") < 200, lit("large"))
-        .otherwise(lit("very_large")),
-    )
-
-    # Calculate medians with error handling
-    try:
-        bedroom_medians = (
-            df_grouped.filter(col("bedroom").isNotNull())
-            .groupBy("city_extracted", "price_range", "area_range")
-            .agg(percentile_approx("bedroom", 0.5).alias("bedroom_median"))
-            .filter(col("bedroom_median").isNotNull())
-        )
-
-        bathroom_medians = (
-            df_grouped.filter(col("bathroom").isNotNull())
-            .groupBy("city_extracted", "price_range", "area_range")
-            .agg(percentile_approx("bathroom", 0.5).alias("bathroom_median"))
-            .filter(col("bathroom_median").isNotNull())
-        )
-    except:
-        # Fallback empty DataFrames
-        from pyspark.sql import SparkSession
-
-        spark = SparkSession.getActiveSession()
-        bedroom_medians = spark.createDataFrame(
-            [],
-            "city_extracted string, price_range string, area_range string, bedroom_median double",
-        )
-        bathroom_medians = spark.createDataFrame(
-            [],
-            "city_extracted string, price_range string, area_range string, bathroom_median double",
-        )
-
-    # Join medians
-    return df_grouped.join(
-        bedroom_medians, ["city_extracted", "price_range", "area_range"], "left"
-    ).join(bathroom_medians, ["city_extracted", "price_range", "area_range"], "left")
-
-
-def apply_final_imputation_logic(df: DataFrame) -> DataFrame:
-    """Apply the final imputation logic with validation"""
-    # Calculate overall medians as fallback
-    try:
-        overall_bedroom_median = (
-            df.filter(col("bedroom").isNotNull())
-            .select(percentile_approx("bedroom", 0.5))
-            .collect()[0][0]
-            or 2.0
-        )
-        overall_bathroom_median = (
-            df.filter(col("bathroom").isNotNull())
-            .select(percentile_approx("bathroom", 0.5))
-            .collect()[0][0]
-            or 1.0
-        )
-    except:
-        overall_bedroom_median = 2.0
-        overall_bathroom_median = 1.0
-
-    # Apply smart filling logic
-    df_imputed = df.withColumn(
-        "bedroom_final",
-        when(col("bedroom").isNotNull(), col("bedroom"))
-        .when(
-            col("bedroom_from_text").isNotNull()
-            & (col("bedroom_from_text") >= 1)
-            & (col("bedroom_from_text") <= 10),
-            col("bedroom_from_text"),
-        )
-        .when(col("bedroom_median").isNotNull(), col("bedroom_median"))
-        .when(col("bedroom_from_area").isNotNull(), col("bedroom_from_area"))
-        .otherwise(lit(overall_bedroom_median)),
-    ).withColumn(
-        "bathroom_final",
-        when(col("bathroom").isNotNull(), col("bathroom"))
-        .when(
-            col("bathroom_from_text").isNotNull()
-            & (col("bathroom_from_text") >= 1)
-            & (col("bathroom_from_text") <= 5),
-            col("bathroom_from_text"),
-        )
-        .when(col("bathroom_median").isNotNull(), col("bathroom_median"))
-        .when(col("bathroom_from_area").isNotNull(), col("bathroom_from_area"))
-        .otherwise(lit(overall_bathroom_median)),
-    )
-
-    # Validation rules
-    df_validated = df_imputed.withColumn(
-        "bathroom_final",
-        when(col("bathroom_final") > (col("bedroom_final") + 1), col("bedroom_final"))
-        .when(col("bathroom_final") < 1, lit(1))
-        .when(col("bathroom_final") > 6, lit(4))
-        .otherwise(col("bathroom_final")),
-    ).withColumn(
-        "bedroom_final",
-        when((col("area") < 30) & (col("bedroom_final") > 2), lit(1))
-        .when((col("area") < 50) & (col("bedroom_final") > 3), lit(2))
-        .when(col("bedroom_final") < 1, lit(1))
-        .when(col("bedroom_final") > 10, lit(6))
-        .otherwise(col("bedroom_final")),
-    )
-
-    # Clean up and return
-    result_df = (
-        df_validated.drop(
-            "title_desc_combined",
-            "bedroom_from_text",
-            "bathroom_from_text",
-            "bedroom_from_area",
-            "bathroom_from_area",
-            "price_range",
-            "area_range",
-            "bedroom_median",
-            "bathroom_median",
-            "city_extracted",
-        )
-        .withColumn("bedroom", col("bedroom_final"))
-        .withColumn("bathroom", col("bathroom_final"))
-        .drop("bedroom_final", "bathroom_final")
-    )
-
-    # Log results
-    original_bedroom_nulls = df.filter(col("bedroom").isNull()).count()
-    original_bathroom_nulls = df.filter(col("bathroom").isNull()).count()
-    final_bedroom_nulls = result_df.filter(col("bedroom").isNull()).count()
-    final_bathroom_nulls = result_df.filter(col("bathroom").isNull()).count()
-
-    logger = SparkJobLogger("smart_imputation")
-    logger.logger.info(
-        f"Bedroom imputation: {original_bedroom_nulls} -> {final_bedroom_nulls} nulls"
-    )
-    logger.logger.info(
-        f"Bathroom imputation: {original_bathroom_nulls} -> {final_bathroom_nulls} nulls"
-    )
-
-    return result_df
+    logger.logger.info("Data type conversion completed")
+    return numeric_df
 
 
 # ===================== MAIN TRANSFORMATION =====================
@@ -611,31 +344,7 @@ def transform_batdongsan_data(
 
         # Step 1: Data type conversions
         logger.logger.info("Step 1: Converting data types...")
-        numeric_df = (
-            bronze_df.withColumn(
-                "area", regexp_replace(col("area"), "[^0-9\\.]", "").cast("double")
-            )
-            .withColumn(
-                "bathroom", regexp_replace(col("bathroom"), "[^0-9]", "").cast("double")
-            )
-            .withColumn(
-                "bedroom", regexp_replace(col("bedroom"), "[^0-9]", "").cast("double")
-            )
-            .withColumn(
-                "floor_count",
-                regexp_replace(col("floor_count"), "[^0-9]", "").cast("double"),
-            )
-            .withColumn(
-                "facade_width",
-                regexp_replace(col("facade_width"), "[^0-9\\.]", "").cast("double"),
-            )
-            .withColumn(
-                "road_width",
-                regexp_replace(col("road_width"), "[^0-9\\.]", "").cast("double"),
-            )
-            .withColumn("latitude", col("latitude").cast("double"))
-            .withColumn("longitude", col("longitude").cast("double"))
-        )
+        numeric_df = convert_data_types(bronze_df)
 
         # Cache to break lineage and prevent code generation issues
         numeric_df.cache()
@@ -643,60 +352,7 @@ def transform_batdongsan_data(
 
         # Step 2: Price processing
         logger.logger.info("Step 2: Processing price data...")
-        price_df = (
-            numeric_df.withColumn("price_text", trim(col("price")))
-            .withColumn(
-                "is_negotiable",
-                when(
-                    lower(col("price_text")).contains("thỏa thuận")
-                    | lower(col("price_text")).contains("thoathuan"),
-                    lit(True),
-                ).otherwise(lit(False)),
-            )
-            .withColumn(
-                "price",
-                when(col("is_negotiable"), lit(None))
-                .when(
-                    lower(col("price_text")).contains("tỷ")
-                    | lower(col("price_text")).contains("ty"),
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                    * 1_000_000_000,
-                )
-                .when(
-                    lower(col("price_text")).contains("triệu")
-                    | lower(col("price_text")).contains("trieu"),
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                    * 1_000_000,
-                )
-                .otherwise(
-                    regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-                ),
-            )
-            .withColumn("price_per_m2_text", trim(col("price_per_m2")))
-            .withColumn(
-                "price_per_m2",
-                when(
-                    lower(col("price_per_m2_text")).contains("tỷ"),
-                    regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast(
-                        "double"
-                    )
-                    * 1_000_000_000,
-                )
-                .when(
-                    lower(col("price_per_m2_text")).contains("triệu"),
-                    regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast(
-                        "double"
-                    )
-                    * 1_000_000,
-                )
-                .otherwise(
-                    regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast(
-                        "double"
-                    )
-                ),
-            )
-            .drop("price_text", "price_per_m2_text")
-        )
+        price_df = process_price_data(numeric_df)
 
         # Step 3: Categorical mappings - Using direct SQL expressions instead of UDFs
         logger.logger.info("Step 3: Applying categorical mappings...")
@@ -835,37 +491,17 @@ def transform_batdongsan_data(
         mapped_df.cache()
         logger.logger.info(f"Cached categorical mapping: {mapped_df.count():,} records")
 
-        # Step 4: Calculate missing price_per_m2
-        calculated_df = mapped_df.withColumn(
-            "price_per_m2",
-            when(
-                col("price_per_m2").isNull()
-                & col("price").isNotNull()
-                & col("area").isNotNull()
-                & (col("area") > 0),
-                spark_round(col("price") / col("area"), 2),
-            ).otherwise(col("price_per_m2")),
-        )
+        # Step 4: Apply coordinate validation
+        logger.logger.info("Step 4: Validating coordinates...")
+        validated_df = validate_coordinates(mapped_df)
 
-        # Step 5: Remove outliers
-        logger.logger.info("Step 5: Removing outliers...")
-        outlier_removed_df = detect_and_remove_outliers(calculated_df)
-
-        # Step 6: Smart imputation
-        logger.logger.info("Step 6: Smart imputation...")
-        imputed_df = smart_impute_bedroom_bathroom(outlier_removed_df)
-
-        # Cache after imputation to break complex lineage
-        imputed_df.cache()
-        logger.logger.info(f"Cached imputation results: {imputed_df.count():,} records")
-
-        # Step 7: Convert timestamps
-        timestamp_df = imputed_df.withColumn(
+        # Step 5: Convert timestamps
+        timestamp_df = validated_df.withColumn(
             "crawl_timestamp", to_timestamp(col("crawl_timestamp"))
         ).withColumn("posted_date", to_timestamp(col("posted_date")))
 
-        # Step 8: Add metadata and quality scoring
-        logger.logger.info("Step 8: Adding quality scoring...")
+        # Step 6: Add metadata and quality scoring
+        logger.logger.info("Step 6: Adding quality scoring...")
 
         # Handle source column - either use existing source or rename data_source to source
         pre_final_df = timestamp_df
@@ -921,19 +557,19 @@ def transform_batdongsan_data(
             .withColumn("processing_id", lit(processing_id))
         )
 
-        # Step 9: Filter for quality
+        # Step 7: Filter for quality
         final_filtered_df = final_df.filter(
             col("has_valid_area")
             & (col("has_valid_price") | col("price_per_m2").isNotNull())
             & col("has_valid_location")
-            & (col("data_quality_score") >= 60)
+            & (col("data_quality_score") >= 50)  # Lowered threshold since no imputation
         ).drop(
             "has_valid_price", "has_valid_area", "has_valid_location", "has_coordinates"
         )
 
         logger.log_dataframe_info(final_filtered_df, "silver_data")
 
-        # Step 10: Write silver data
+        # Step 8: Write silver data
         output_path = os.path.join(
             silver_path, f"batdongsan_{input_date.replace('-', '')}.parquet"
         )

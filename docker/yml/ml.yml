@@ -1,0 +1,146 @@
+version: '3.8'
+
+services:
+    # 🤖 Advanced ML Training Service (XGBoost, LightGBM, CatBoost)
+    ml-trainer:
+        build:
+            context: ../../
+            dockerfile: docker/ml/Dockerfile.ml-trainer
+        container_name: realestate-ml-trainer
+        environment:
+            - SPARK_MASTER=spark://spark-master:7077
+            - HDFS_NAMENODE=hdfs://namenode:9000
+            - MLFLOW_TRACKING_URI=http://mlflow:5000
+            - PYTHONPATH=/app
+        volumes:
+            - ../../data_processing:/app/data_processing
+            - ../../scripts:/app/scripts
+            - hdfs-data:/data
+            - ml_models:/app/models
+        networks:
+            - ml_network
+            - hdfs_network
+        depends_on:
+            - namenode
+            - spark-master
+            - mlflow
+        ports:
+            - '4040:4040' # Spark UI
+        restart: unless-stopped
+        command: |
+            bash -c "
+                echo '🤖 Advanced ML Training Service Ready'
+                tail -f /dev/null
+            "
+
+    # 🔄 Incremental Training Manager (Daily Updates)
+    ml-incremental-trainer:
+        build:
+            context: ../../
+            dockerfile: docker/ml/Dockerfile.ml-trainer
+        container_name: realestate-ml-incremental-trainer
+        environment:
+            - SPARK_MASTER=spark://spark-master:7077
+            - HDFS_NAMENODE=hdfs://namenode:9000
+            - MLFLOW_TRACKING_URI=http://mlflow:5000
+            - PYTHONPATH=/app
+        volumes:
+            - ../../data_processing:/app/data_processing
+            - ../../scripts:/app/scripts
+            - hdfs-data:/data
+            - ml_models:/app/models
+        networks:
+            - ml_network
+            - hdfs_network
+        depends_on:
+            - namenode
+            - spark-master
+            - mlflow
+        restart: unless-stopped
+        command: |
+            bash -c "
+                echo '🔄 Incremental Training Manager Ready'
+                tail -f /dev/null
+            "
+
+    # 🔮 ML Inference API (Production Predictions)
+    ml-inference-api:
+        build:
+            context: ../../
+            dockerfile: docker/ml/Dockerfile.ml-trainer
+        container_name: realestate-ml-inference-api
+        environment:
+            - HDFS_NAMENODE=hdfs://namenode:9000
+            - REDIS_HOST=redis
+            - REDIS_PORT=6379
+            - PYTHONPATH=/app
+        volumes:
+            - ml_models:/app/models
+            - hdfs-data:/data
+            - ../../data_processing:/app/data_processing
+        networks:
+            - ml_network
+            - hdfs_network
+        depends_on:
+            - namenode
+            - redis
+            - ml-trainer
+        ports:
+            - '8080:8080' # FastAPI inference service
+        restart: unless-stopped
+        command: |
+            bash -c "
+                echo '🔮 ML Inference API Starting...'
+                cd /app && python -m data_processing.ml.ml_inference_pipeline
+            "
+
+    # 📊 MLflow Tracking Server (Experiment Management)
+    mlflow:
+        image: python:3.9-slim
+        container_name: realestate-mlflow
+        environment:
+            - MLFLOW_BACKEND_STORE_URI=sqlite:///mlflow/mlflow.db
+            - MLFLOW_ARTIFACT_ROOT=/mlflow/artifacts
+        volumes:
+            - mlflow-data:/mlflow
+        networks:
+            - ml_network
+        ports:
+            - '5000:5000'
+        command: |
+            bash -c "
+                pip install mlflow==2.6.0 &&
+                mkdir -p /mlflow/artifacts &&
+                mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts --host 0.0.0.0 --port 5000
+            "
+
+    # 🗄️ Redis Cache (Feature Store & Model Caching)
+    redis:
+        image: redis:7-alpine
+        container_name: realestate-redis
+        networks:
+            - ml_network
+        volumes:
+            - redis-data:/data
+        ports:
+            - '6379:6379'
+        command: redis-server --appendonly yes
+
+volumes:
+    ml_models:
+        name: ml_models
+    mlflow-data:
+        name: mlflow-data
+    redis-data:
+        name: redis-data
+    hdfs-data:
+        external: true
+        name: realestate_hdfs-data
+
+networks:
+    ml_network:
+        name: ml_network
+        driver: bridge
+    hdfs_network:
+        external: true
+        name: realestate_hdfs_network

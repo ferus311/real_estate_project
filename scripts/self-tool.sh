@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Script khởi động hệ thống crawler bất động sản
-# Khởi động các dịch vụ theo thứ tự phù hợp
-set -e
-# cd ./docker
+# Đặt biến để dễ debug
+set -e  # Thoát script nếu có lỗi
+
 # Màu sắc cho output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -53,14 +52,12 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
-mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
 # mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
+mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 
 
 sudo mkdir -p /crawler/checkpoint
-
-
 if ! grep -qs ${PROJECT_DIR}/docker/volumes/crawler/checkpoint /proc/mounts; then
     echo "Mounting..."
     sudo mount --bind /crawler/checkpoint ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
@@ -88,6 +85,7 @@ if ! docker network ls | grep -q kafka_network; then
     docker network create kafka_network
     check_error "Không thể tạo network kafka_network"
 fi
+
 
 # Khởi động HDFS cluster
 echo -e "${BLUE}[INFO]${NC} Khởi động HDFS cluster..."
@@ -118,17 +116,20 @@ check_error "Không thể khởi động Airflow"
 # Đợi Airflow webserver khởi động
 wait_for_service "Airflow webserver" "8080" "localhost" 180
 
-Khởi động crawler shell
-echo -e "${BLUE}[INFO]${NC} Khởi động crawler shell..."
-docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
-check_error "Không thể khởi động crawler shell"
 
 # Khởi động Spark
 echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
-docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml build 
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1
 check_error "Không thể khởi động Spark"
 # Đợi Spark khởi động
 wait_for_service "Spark" "8181" "localhost" 120
+
+# Khởi động crawler shell
+echo -e "${BLUE}[INFO]${NC} Thiết lập các image crawler và processor"
+docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml build spark-processor
+check_error "Không thể build image realestate-crawler-service và spark-processor"
+
 
 echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi động thành công!"
 echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"

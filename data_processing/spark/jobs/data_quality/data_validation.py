@@ -59,7 +59,7 @@ def validate_property_data(
 
     # Đường dẫn nguồn và đích
     gold_path = get_hdfs_path(
-        "/data/realestate/processed/analytics", property_type, input_date
+        "/data/realestate/processed/gold", property_type, input_date
     )
 
     try:

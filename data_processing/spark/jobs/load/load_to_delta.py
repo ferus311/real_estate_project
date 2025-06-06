@@ -30,7 +30,7 @@ def load_to_delta_lake(
     table_name="property_data",
 ) -> None:
     """
-    Lưu dữ liệu vào Delta Lake
+    Lưu dữ liệu từ Gold layer vào Delta Lake
 
     Args:
         spark: SparkSession
@@ -51,9 +51,9 @@ def load_to_delta_lake(
     if input_date is None:
         input_date = get_date_format()
 
-    # Đường dẫn nguồn và đích
+    # Đường dẫn nguồn và đích - Fixed to use unified Gold layer structure
     gold_path = get_hdfs_path(
-        "/data/realestate/processed/analytics", property_type, input_date
+        "/data/realestate/processed/gold/unified", property_type, input_date
     )
     delta_path = f"/data/realestate/ml/features/{table_name}"
 
@@ -61,20 +61,53 @@ def load_to_delta_lake(
     ensure_hdfs_path(spark, delta_path)
 
     try:
-        # Đọc dữ liệu đã được làm giàu
-        enriched_file = f"{gold_path}/enriched_{property_type}_{input_date.replace('-', '')}.parquet"
+        # Handle "all" property types
+        if property_type == "all":
+            property_types = ["house", "other"]
+            all_dfs = []
 
-        if not check_hdfs_path_exists(spark, enriched_file):
-            error_message = f"Dữ liệu đã làm giàu không tồn tại: {enriched_file}"
-            logger.log_error(error_message)
-            raise FileNotFoundError(error_message)
+            for ptype in property_types:
+                ptype_gold_path = get_hdfs_path(
+                    "/data/realestate/processed/gold/unified", ptype, input_date
+                )
+                unified_file = f"{ptype_gold_path}/unified_{ptype}_{input_date.replace('-', '')}.parquet"
 
-        enriched_df = spark.read.parquet(enriched_file)
-        logger.log_dataframe_info(enriched_df, "input_data")
+                if check_hdfs_path_exists(spark, unified_file):
+                    df = spark.read.parquet(unified_file)
+                    logger.logger.info(f"Loaded {df.count():,} records for {ptype}")
+                    all_dfs.append(df)
+                else:
+                    logger.logger.warning(
+                        f"No unified data found for {ptype}: {unified_file}"
+                    )
+
+            if not all_dfs:
+                error_message = (
+                    f"No unified data found for any property type on {input_date}"
+                )
+                logger.log_error(error_message)
+                raise FileNotFoundError(error_message)
+
+            # Union all dataframes
+            unified_df = all_dfs[0]
+            for df in all_dfs[1:]:
+                unified_df = unified_df.union(df)
+
+        else:
+            # Đọc dữ liệu từ Gold layer unified data
+            unified_file = f"{gold_path}/unified_{property_type}_{input_date.replace('-', '')}.parquet"
+
+            if not check_hdfs_path_exists(spark, unified_file):
+                error_message = f"Dữ liệu unified không tồn tại: {unified_file}"
+                logger.log_error(error_message)
+                raise FileNotFoundError(error_message)
+
+            unified_df = spark.read.parquet(unified_file)
+        logger.log_dataframe_info(unified_df, "input_data")
 
         # Thêm thông tin phiên bản và thời gian cập nhật
         final_df = (
-            enriched_df.withColumn("update_timestamp", current_timestamp())
+            unified_df.withColumn("update_timestamp", current_timestamp())
             .withColumn("processing_date", lit(input_date))
             .withColumn("data_version", lit("v1"))
             .withColumn("property_type", lit(property_type))
