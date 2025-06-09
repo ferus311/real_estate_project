@@ -4,7 +4,7 @@
 
 Hệ thống ML training hoàn chỉnh cho dự đoán giá bất động sản Việt Nam với:
 
--   ✅ **Advanced Feature Engineering** với 60+ features thông minh
+-   ✅ **Feature Engineering** với 60+ features thông minh
 -   ✅ **State-of-the-art Models**: XGBoost, LightGBM, CatBoost, Ensemble
 -   ✅ **Incremental Learning** cho daily updates
 -   ✅ **Production-ready** deployment với Docker
@@ -17,7 +17,7 @@ Hệ thống ML training hoàn chỉnh cho dự đoán giá bất động sản 
        ↓
 🔧 Feature Engineering (Spark Job)
        ↓
-📈 Advanced ML Training (XGBoost/LightGBM/CatBoost)
+📈 ML Training (XGBoost/LightGBM/CatBoost)
        ↓
 💾 Model Registry (Versioned Models)
        ↓

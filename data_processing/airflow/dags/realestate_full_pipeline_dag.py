@@ -21,7 +21,8 @@ dag = DAG(
     "realestate_full_pipeline_daily",
     default_args=default_args,
     description="Pipeline đầy đủ: Crawler -> Storage -> Xử lý dữ liệu",
-    schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày
+    # schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày
+    schedule_interval=None,  # Không sử dụng cron, chạy thủ công hoặc theo lịch trình khác
     catchup=False,  # Không chạy lại các ngày trước
     start_date=datetime(2025, 6, 1, tzinfo=timezone("Asia/Ho_Chi_Minh")),  # Ngày bắt đầu DAG
     tags=["pipeline", "crawler", "storage", "processing"],
@@ -86,12 +87,7 @@ trigger_storage = TriggerDagRunOperator(
     dag=dag,
 )
 
-# Chờ một khoảng thời gian để dữ liệu được lưu trữ hoàn tất
-wait_for_storage = BashOperator(
-    task_id="wait_for_storage_completion",
-    bash_command="echo 'Đợi 3 phút để đảm bảo dữ liệu đã được lưu trữ hoàn tất' && sleep 180",
-    dag=dag,
-)
+
 
 # Kích hoạt DAG xử lý dữ liệu
 trigger_data_processing = TriggerDagRunOperator(
@@ -115,6 +111,5 @@ trigger_data_processing = TriggerDagRunOperator(
     >> check_connectivity
     >> [trigger_api_crawler, trigger_playwright_crawler]
     >> trigger_storage
-    >> wait_for_storage
     >> trigger_data_processing
 )

@@ -1,12 +1,16 @@
 """
 Pipeline xử lý Machine Learning riêng biệt
-Gold → ML Features → Trained Models
+Gold → Data Preparation → Trained Models
 
 Tách biệt hoàn toàn khỏi ETL pipeline để:
 - Độc lập về tài nguyên và cấu hình
 - Lịch chạy khác nhau (ETL hàng ngày, ML theo tuần/tháng)
 - Dễ bảo trì và phát triển
 - Tách biệt team ownership
+
+Pipeline có 2 stages chính:
+1. Data Preparation: Gold → Cleaned Data + Feature Engineering
+2. Model Training: Prepared Data → Trained Models
 """
 
 from pyspark.sql import SparkSession
@@ -15,59 +19,62 @@ import sys
 import os
 import argparse
 
-# Thêm thư mục gốc vào sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
 
-from common.utils.date_utils import get_date_format, get_hdfs_path
+
+from common.utils.date_utils import get_date_format
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_optimized_ml_spark_session
-from jobs.enrichment.ml_feature_engineering import run_ml_feature_engineering
-from ml.advanced_ml_training import run_ml_training
+
+# Import correct ML pipeline modules from ml/pipelines/
+from ml.pipelines.data_preparation import MLDataPreprocessor
+from ml.pipelines.model_training import run_ml_training
 
 
-def run_ml_feature_stage(
+def run_data_preparation_stage(
     spark: SparkSession, input_date: str, property_type: str, logger
 ) -> bool:
-    """Stage 1: ML Feature Engineering (Gold → ML Features)"""
-    logger.logger.info("🧠 Stage 1: ML Feature Engineering")
+    """Stage 1: Data Preparation (Gold → Cleaned Data + Feature Engineering)"""
+    logger.logger.info("🔧 Stage 1: Data Preparation (Cleaning + Feature Engineering)")
 
     try:
         start_time = datetime.now()
-        result = run_ml_feature_engineering(
-            spark=spark, input_date=input_date, property_type=property_type
-        )
-        duration = (datetime.now() - start_time).total_seconds()
 
-        if result and result.get("success", False):
-            logger.logger.info(f"✅ ML Features completed: {duration:.1f}s")
-            logger.logger.info(
-                f"📊 Created {result.get('total_features', 0)} features from {result.get('total_records', 0):,} records"
-            )
-            return True
-        else:
-            logger.logger.warning(
-                "⚠️  ML Feature Engineering returned unsuccessful result"
-            )
-            return False
+        # Initialize data preparation pipeline
+        data_prep = MLDataPreprocessor(spark=spark)
+
+        # Run full data preparation pipeline
+        prepared_df = data_prep.run_full_pipeline(input_date, property_type)
+
+        duration = (datetime.now() - start_time).total_seconds()
+        record_count = prepared_df.count()
+
+        logger.logger.info(f"✅ Data Preparation completed: {duration:.1f}s")
+        logger.logger.info(
+            f"📊 Prepared {record_count:,} records with features for training"
+        )
+        return True
 
     except Exception as e:
-        logger.log_error(f"❌ ML Feature Engineering failed: {str(e)}")
+        logger.log_error(f"❌ Data Preparation failed: {str(e)}")
         return False
 
 
-def run_ml_training_stage(
+def run_model_training_stage(
     spark: SparkSession, input_date: str, property_type: str, logger
 ) -> bool:
-    """Stage 2: ML Model Training (ML Features → Trained Models)"""
-    logger.logger.info("🤖 Stage 2: ML Model Training (Performance Optimized)")
+    """Stage 2: Model Training (Prepared Data → Trained Models)"""
+    logger.logger.info("🤖 Stage 2: Model Training")
 
     try:
         start_time = datetime.now()
 
         # Apply performance optimizations to Spark session
         try:
-            from ml.performance_utils import apply_performance_optimizations
+            from data_processing.ml.utils.performance_utils import (
+                apply_performance_optimizations,
+            )
 
             optimized_spark = apply_performance_optimizations(spark)
             logger.logger.info("⚡ Performance optimizations applied")
@@ -77,17 +84,17 @@ def run_ml_training_stage(
             )
             optimized_spark = spark
 
-        # Run optimized ML training
+        # Run ML training with prepared data
         result = run_ml_training(
             spark=optimized_spark, input_date=input_date, property_type=property_type
         )
         duration = (datetime.now() - start_time).total_seconds()
 
-        logger.logger.info(f"✅ ML Training completed: {duration:.1f}s")
+        logger.logger.info(f"✅ Model Training completed: {duration:.1f}s")
         return result
 
     except Exception as e:
-        logger.log_error(f"❌ ML Training failed: {str(e)}")
+        logger.log_error(f"❌ Model Training failed: {str(e)}")
         return False
 
 
@@ -97,8 +104,14 @@ def validate_gold_data_exists(
     """Kiểm tra xem dữ liệu Gold có tồn tại không"""
     from common.utils.hdfs_utils import check_hdfs_path_exists
 
-    date_formatted = input_date.replace("-", "")
-    gold_path = f"/data/realestate/processed/gold/unified/{property_type}/{input_date.replace('-', '/')}/unified_{property_type}_{date_formatted}.parquet"
+    def get_gold_path(property_type: str, date: str) -> str:
+        """Tạo đường dẫn Gold data đơn giản"""
+        date_formatted = date.replace("-", "")
+        date_path = date.replace("-", "/")
+        return f"/data/realestate/processed/gold/unified/{property_type}/{date_path}/unified_{property_type}_{date_formatted}.parquet"
+
+    # Use unified path manager for consistent paths
+    gold_path = get_gold_path(property_type, input_date)
 
     if check_hdfs_path_exists(spark, gold_path):
         logger.logger.info(f"✅ Gold data found: {gold_path}")
@@ -128,9 +141,9 @@ def run_ml_pipeline(
         spark: SparkSession
         input_date: Ngày xử lý (YYYY-MM-DD)
         property_types: Danh sách loại BDS ["house", "other"]
-        feature_only: Chỉ chạy feature engineering
+        feature_only: Chỉ chạy data preparation
         training_only: Chỉ chạy model training
-        skip_features: Bỏ qua feature engineering
+        skip_features: Bỏ qua data preparation
         skip_training: Bỏ qua model training
         validate_gold: Kiểm tra dữ liệu Gold trước khi chạy
     """
@@ -160,15 +173,15 @@ def run_ml_pipeline(
 
     # Determine which stages to run
     if feature_only:
-        stages_to_run = ["features"]
+        stages_to_run = ["data_preparation"]
     elif training_only:
-        stages_to_run = ["training"]
+        stages_to_run = ["model_training"]
     else:
         stages_to_run = []
         if not skip_features:
-            stages_to_run.append("features")
+            stages_to_run.append("data_preparation")
         if not skip_training:
-            stages_to_run.append("training")
+            stages_to_run.append("model_training")
 
     logger.logger.info(f"🚀 Starting ML Pipeline - {input_date}")
     logger.logger.info(f"📋 Property types: {property_types}")
@@ -198,27 +211,25 @@ def run_ml_pipeline(
                     property_success = False
                     continue
 
-            # Stage 1: ML Feature Engineering (Gold → ML Features)
-            if "features" in stages_to_run:
-                feature_success = run_ml_feature_stage(
+            # Stage 1: Data Preparation (Gold → Cleaned Data + Feature Engineering)
+            if "data_preparation" in stages_to_run:
+                preparation_success = run_data_preparation_stage(
                     spark, input_date, property_type, logger
                 )
-                if not feature_success:
-                    logger.log_error(
-                        f"❌ ML Feature Engineering failed for {property_type}"
-                    )
+                if not preparation_success:
+                    logger.log_error(f"❌ Data Preparation failed for {property_type}")
                     property_success = False
-                    # Don't continue to training if features failed
+                    # Don't continue to training if preparation failed
                     continue
 
-            # Stage 2: ML Model Training (ML Features → Trained Models)
-            if "training" in stages_to_run:
-                # Validate ML features exist if not just created
-                if "features" not in stages_to_run:
-                    # TODO: Add validation for ML features existence
+            # Stage 2: Model Training (Prepared Data → Trained Models)
+            if "model_training" in stages_to_run:
+                # Validate prepared data exists if not just created
+                if "data_preparation" not in stages_to_run:
+                    # TODO: Add validation for prepared data existence
                     pass
 
-                training_success = run_ml_training_stage(
+                training_success = run_model_training_stage(
                     spark, input_date, property_type, logger
                 )
                 if not training_success:
@@ -249,7 +260,7 @@ def run_ml_pipeline(
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="Run ML Processing Pipeline (Gold → ML Features → Trained Models)"
+        description="Run ML Processing Pipeline (Gold → Data Preparation → Trained Models)"
     )
 
     # Basic arguments
@@ -268,22 +279,22 @@ def parse_args():
     stage_group.add_argument(
         "--feature-only",
         action="store_true",
-        help="Only run ML feature engineering (Gold → ML Features)",
+        help="Only run data preparation (Gold → Cleaned Data + Features)",
     )
     stage_group.add_argument(
         "--training-only",
         action="store_true",
-        help="Only run ML model training (ML Features → Trained Models)",
+        help="Only run model training (Prepared Data → Trained Models)",
     )
 
     # Skip stage arguments - can be combined
     parser.add_argument(
         "--skip-features",
         action="store_true",
-        help="Skip ML feature engineering stage",
+        help="Skip data preparation stage",
     )
     parser.add_argument(
-        "--skip-training", action="store_true", help="Skip ML model training stage"
+        "--skip-training", action="store_true", help="Skip model training stage"
     )
 
     # Validation arguments

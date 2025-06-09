@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+    postgres:
+        image: postgres:13
+        container_name: realestate-postgres
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: password
+            POSTGRES_DB: realestate
+        ports:
+            - '5433:5432' # Khác port với airflow postgres
+        volumes:
+            - realestate_postgres_data:/var/lib/postgresql/data
+            - ../../database/schemas:/docker-entrypoint-initdb.d # Auto run init scripts
+        networks:
+            - real-estate-network
+        restart: unless-stopped
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres -d realestate']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+volumes:
+    realestate_postgres_data:
+
+networks:
+    real-estate-network:
+        external: true

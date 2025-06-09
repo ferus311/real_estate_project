@@ -3,6 +3,11 @@ Chuyển đổi và chuẩn hóa dữ liệu Batdongsan (Bronze → Silver)
 Focus: Data type conversion, standardization, and normalization only
 """
 
+import sys
+import os
+import argparse
+from datetime import datetime
+
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
     col,
@@ -24,11 +29,6 @@ from pyspark.sql.functions import (
     count,
 )
 from pyspark.sql.types import StringType, DoubleType, BooleanType
-
-import sys
-import os
-from datetime import datetime
-import argparse
 import re
 
 # Thêm thư mục gốc vào sys.path
@@ -175,8 +175,49 @@ def process_price_data(df: DataFrame) -> DataFrame:
 
     # Process main price field
     df_price = df.withColumn("price_text", trim(col("price")))
+    df_price = df_price.withColumn("price_per_m2_text", trim(col("price_per_m2")))
 
-    # Check for negotiable prices
+    # Detect swapped fields based on units
+    # price should contain "tỷ" or "triệu" without "/m²"
+    # price_per_m2 should contain "/m²" or be much smaller value
+    df_price = df_price.withColumn(
+        "price_has_per_m2_unit",
+        lower(col("price_text")).contains("/m²")
+        | lower(col("price_text")).contains("/m2")
+        | lower(col("price_text")).contains("trên m²")
+        | lower(col("price_text")).contains("trên m2"),
+    ).withColumn(
+        "price_per_m2_has_total_unit",
+        (
+            lower(col("price_per_m2_text")).contains("tỷ")
+            | lower(col("price_per_m2_text")).contains("ty")
+        )
+        & ~(lower(col("price_per_m2_text")).contains("/m²"))
+        & ~(lower(col("price_per_m2_text")).contains("/m2")),
+    )
+
+    # Swap fields when detected
+    df_price = df_price.withColumn(
+        "price_text_corrected",
+        when(
+            col("price_has_per_m2_unit") & col("price_per_m2_has_total_unit"),
+            col("price_per_m2_text"),  # Use price_per_m2 as price
+        ).otherwise(col("price_text")),
+    ).withColumn(
+        "price_per_m2_text_corrected",
+        when(
+            col("price_has_per_m2_unit") & col("price_per_m2_has_total_unit"),
+            col("price_text"),  # Use price as price_per_m2
+        ).otherwise(col("price_per_m2_text")),
+    )
+
+    # Update working columns
+    df_price = df_price.withColumn("price_text", col("price_text_corrected"))
+    df_price = df_price.withColumn(
+        "price_per_m2_text", col("price_per_m2_text_corrected")
+    )
+
+    # Check for negotiable prices and invalid units
     df_price = df_price.withColumn(
         "is_negotiable",
         when(
@@ -184,6 +225,35 @@ def process_price_data(df: DataFrame) -> DataFrame:
             | lower(col("price_text")).contains("thoathuan"),
             lit(True),
         ).otherwise(lit(False)),
+    ).withColumn(
+        "has_invalid_unit",
+        when(
+            lower(col("price_text")).contains("nghìn")
+            | lower(col("price_text")).contains("nghin")
+            | lower(col("price_text")).contains("k ")
+            | lower(col("price_text")).rlike("\\d+k$"),  # số + k ở cuối
+            lit(True),
+        ).otherwise(lit(False)),
+    )
+
+    # Helper function to normalize decimal separator and extract numeric value
+    # For Batdongsan: Vietnamese format where "," is decimal separator and "." is thousand separator
+    # Remove dots (thousand separators) and convert commas to decimal points
+    df_price = df_price.withColumn(
+        "price_normalized",
+        when(col("is_negotiable"), lit(None)).otherwise(
+            regexp_replace(
+                regexp_replace(
+                    regexp_replace(
+                        col("price_text"), "\\.", ""
+                    ),  # Remove dots (thousand separators)
+                    ",",
+                    ".",  # Convert comma to decimal point
+                ),
+                "[^0-9\\.]",
+                "",  # Remove all non-numeric except decimal point
+            )
+        ),
     )
 
     # Convert price based on unit (tỷ, triệu, etc.)
@@ -193,36 +263,53 @@ def process_price_data(df: DataFrame) -> DataFrame:
         .when(
             lower(col("price_text")).contains("tỷ")
             | lower(col("price_text")).contains("ty"),
-            regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-            * 1_000_000_000,
+            col("price_normalized").cast("double") * 1_000_000_000,
         )
         .when(
             lower(col("price_text")).contains("triệu")
             | lower(col("price_text")).contains("trieu"),
-            regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")
-            * 1_000_000,
+            col("price_normalized").cast("double") * 1_000_000,
         )
-        .otherwise(regexp_replace(col("price_text"), "[^0-9\\.]", "").cast("double")),
+        .otherwise(col("price_normalized").cast("double")),
     )
 
     # Process price per m2 field
     df_price = df_price.withColumn("price_per_m2_text", trim(col("price_per_m2")))
 
+    # Helper function to normalize decimal separator for price_per_m2
+    # For Batdongsan: Vietnamese format where "," is decimal separator and "." is thousand separator
+    # Remove dots (thousand separators) and convert commas to decimal points
+    df_price = df_price.withColumn(
+        "price_per_m2_normalized",
+        # Step 1: Remove dots (thousand separators)
+        # Step 2: Replace commas with dots (for decimal)
+        # Step 3: Remove any remaining non-numeric characters except decimal point
+        regexp_replace(
+            regexp_replace(
+                regexp_replace(
+                    col("price_per_m2_text"), "\\.", ""
+                ),  # Remove dots (thousand separators)
+                ",",
+                ".",  # Convert comma to decimal point
+            ),
+            "[^0-9\\.]",
+            "",  # Remove all non-numeric except decimal point
+        ),
+    )
+
     df_price = df_price.withColumn(
         "price_per_m2",
         when(
-            lower(col("price_per_m2_text")).contains("tỷ"),
-            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
-            * 1_000_000_000,
+            lower(col("price_per_m2_text")).contains("tỷ")
+            | lower(col("price_per_m2_text")).contains("ty"),
+            col("price_per_m2_normalized").cast("double") * 1_000_000_000,
         )
         .when(
-            lower(col("price_per_m2_text")).contains("triệu"),
-            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
-            * 1_000_000,
+            lower(col("price_per_m2_text")).contains("triệu")
+            | lower(col("price_per_m2_text")).contains("trieu"),
+            col("price_per_m2_normalized").cast("double") * 1_000_000,
         )
-        .otherwise(
-            regexp_replace(col("price_per_m2_text"), "[^0-9\\.]", "").cast("double")
-        ),
+        .otherwise(col("price_per_m2_normalized").cast("double")),
     )
 
     # Calculate price per m2 if both price and area are available and price_per_m2 is null
@@ -238,7 +325,24 @@ def process_price_data(df: DataFrame) -> DataFrame:
     )
 
     logger.logger.info("Price processing completed")
-    return df_price.drop("price_text", "price_per_m2_text")
+
+    # Filter out records with invalid units and drop helper columns
+    df_cleaned = df_price.filter(
+        ~col("has_invalid_unit")  # Filter out records with "nghìn" units
+    ).drop(
+        "price_text",
+        "price_per_m2_text",
+        "price_normalized",
+        "price_per_m2_normalized",
+        "price_text_corrected",
+        "price_per_m2_text_corrected",
+        "price_has_per_m2_unit",
+        "price_per_m2_has_total_unit",
+        "has_invalid_unit",
+        "is_negotiable",
+    )
+
+    return df_cleaned
 
 
 # ===================== COORDINATE VALIDATION =====================
@@ -273,9 +377,24 @@ def convert_data_types(df: DataFrame) -> DataFrame:
     logger = SparkJobLogger("data_type_conversion")
 
     # Convert numeric fields with proper cleaning
+    # Special handling for area: For Batdongsan Vietnamese format - remove dots, convert commas to decimal points
     numeric_df = (
         df.withColumn(
-            "area", regexp_replace(col("area"), "[^0-9\\.]", "").cast("double")
+            "area",
+            # Step 1: Remove dots (thousand separators)
+            # Step 2: Replace commas with dots (for decimal)
+            # Step 3: Remove any remaining non-numeric characters except decimal point
+            regexp_replace(
+                regexp_replace(
+                    regexp_replace(
+                        col("area"), "\\.", ""
+                    ),  # Remove dots (thousand separators)
+                    ",",
+                    ".",  # Convert comma to decimal point
+                ),
+                "[^0-9\\.]",
+                "",  # Remove all non-numeric except decimal point
+            ).cast("double"),
         )
         .withColumn(
             "bathroom", regexp_replace(col("bathroom"), "[^0-9]", "").cast("double")
@@ -289,11 +408,33 @@ def convert_data_types(df: DataFrame) -> DataFrame:
         )
         .withColumn(
             "facade_width",
-            regexp_replace(col("facade_width"), "[^0-9\\.]", "").cast("double"),
+            # For Batdongsan Vietnamese format - remove dots, convert commas to decimal points
+            regexp_replace(
+                regexp_replace(
+                    regexp_replace(
+                        col("facade_width"), "\\.", ""
+                    ),  # Remove dots (thousand separators)
+                    ",",
+                    ".",  # Convert comma to decimal point
+                ),
+                "[^0-9\\.]",
+                "",  # Remove all non-numeric except decimal point
+            ).cast("double"),
         )
         .withColumn(
             "road_width",
-            regexp_replace(col("road_width"), "[^0-9\\.]", "").cast("double"),
+            # For Batdongsan Vietnamese format - remove dots, convert commas to decimal points
+            regexp_replace(
+                regexp_replace(
+                    regexp_replace(
+                        col("road_width"), "\\.", ""
+                    ),  # Remove dots (thousand separators)
+                    ",",
+                    ".",  # Convert comma to decimal point
+                ),
+                "[^0-9\\.]",
+                "",  # Remove all non-numeric except decimal point
+            ).cast("double"),
         )
         .withColumn("latitude", col("latitude").cast("double"))
         .withColumn("longitude", col("longitude").cast("double"))
@@ -523,48 +664,20 @@ def transform_batdongsan_data(
             .withColumn("living_size", lit(None).cast(DoubleType()))  # Chotot specific
         )
 
-        final_df = (
-            pre_final_df.withColumn(
-                "has_valid_price", col("price").isNotNull() & (col("price") > 0)
-            )
-            .withColumn("has_valid_area", col("area").isNotNull() & (col("area") > 0))
-            .withColumn(
-                "has_valid_location",
-                col("location").isNotNull() & (length(col("location")) > 5),
-            )
-            .withColumn(
-                "has_coordinates",
-                col("latitude").isNotNull() & col("longitude").isNotNull(),
-            )
-            .withColumn(
-                "data_quality_score",
-                (when(col("has_valid_area"), lit(20)).otherwise(lit(0)))
-                + (when(col("has_valid_price"), lit(20)).otherwise(lit(0)))
-                + (
-                    when(
-                        col("bedroom").isNotNull() & (col("bedroom") > 0), lit(15)
-                    ).otherwise(lit(0))
-                )
-                + (
-                    when(
-                        col("bathroom").isNotNull() & (col("bathroom") > 0), lit(15)
-                    ).otherwise(lit(0))
-                )
-                + (when(col("has_valid_location"), lit(15)).otherwise(lit(0)))
-                + (when(col("has_coordinates"), lit(15)).otherwise(lit(0))),
-            )
-            .withColumn("processing_timestamp", current_timestamp())
-            .withColumn("processing_id", lit(processing_id))
-        )
+        final_df = pre_final_df.withColumn(
+            "processing_timestamp", current_timestamp()
+        ).withColumn("processing_id", lit(processing_id))
 
-        # Step 7: Filter for quality
+        # Step 7: Simple quality filter (detailed scoring will be done in unify step)
         final_filtered_df = final_df.filter(
-            col("has_valid_area")
-            & (col("has_valid_price") | col("price_per_m2").isNotNull())
-            & col("has_valid_location")
-            & (col("data_quality_score") >= 50)  # Lowered threshold since no imputation
-        ).drop(
-            "has_valid_price", "has_valid_area", "has_valid_location", "has_coordinates"
+            col("area").isNotNull()
+            & (col("area") > 0)
+            & (
+                (col("price").isNotNull() & (col("price") > 0))
+                | col("price_per_m2").isNotNull()
+            )
+            & col("location").isNotNull()
+            & (length(col("location")) > 5)
         )
 
         logger.log_dataframe_info(final_filtered_df, "silver_data")
@@ -581,22 +694,14 @@ def transform_batdongsan_data(
             f"Successfully processed {final_count:,} silver records to {output_path}"
         )
 
-        # Log quality statistics
-        quality_stats = final_filtered_df.select(
-            avg("data_quality_score").alias("avg_quality"),
-            count(when(col("data_quality_score") >= 80, True)).alias(
-                "high_quality_count"
-            ),
-            count(when(col("data_quality_score") >= 90, True)).alias(
-                "premium_quality_count"
-            ),
-        ).collect()[0]
-
+        # Simple logging without complex quality statistics
         logger.logger.info(
-            f"Quality metrics - Average: {quality_stats['avg_quality']:.1f}, "
-            f"High quality (≥80): {quality_stats['high_quality_count']:,}, "
-            f"Premium quality (≥90): {quality_stats['premium_quality_count']:,}"
+            f"Records with valid area: {final_filtered_df.filter(col('area').isNotNull()).count():,}"
         )
+        logger.logger.info(
+            f"Records with valid price: {final_filtered_df.filter(col('price').isNotNull()).count():,}"
+        )
+        logger.logger.info("Detailed quality scoring will be performed in unify step")
 
         logger.end_job()
         return final_filtered_df

@@ -46,42 +46,5 @@ run_processing = DockerOperator(
     docker_url="unix://var/run/docker.sock",
     dag=dag,
 )
-
-# ML Feature Engineering - tạo features từ Gold data
-ml_feature_engineering = DockerOperator(
-    task_id="ml_feature_engineering",
-    image="spark-processor:latest",
-    command=f"python /app/jobs/enrichment/ml_feature_engineering.py --date {date_param} --property-type {property_types}",
-    network_mode="hdfs_network",
-    api_version="auto",
-    auto_remove=True,
-    mount_tmp_dir=False,
-    environment={
-        "SPARK_MASTER_URL": "spark://spark-master:7077",
-        "CORE_CONF_fs_defaultFS": "hdfs://namenode:9000",
-        "HDFS_NAMENODE_ADDRESS": "hdfs://namenode:9000",
-    },
-    docker_url="unix://var/run/docker.sock",
-    dag=dag,
-)
-
-# ML Model Training - train models từ engineered features
-ml_model_training = DockerOperator(
-    task_id="ml_model_training",
-    image="spark-processor:latest",
-    command=f"python /app/ml/ml_training_pipeline.py --date {date_param} --property-type {property_types}",
-    network_mode="hdfs_network",
-    api_version="auto",
-    auto_remove=True,
-    mount_tmp_dir=False,
-    environment={
-        "SPARK_MASTER_URL": "spark://spark-master:7077",
-        "CORE_CONF_fs_defaultFS": "hdfs://namenode:9000",
-        "HDFS_NAMENODE_ADDRESS": "hdfs://namenode:9000",
-    },
-    docker_url="unix://var/run/docker.sock",
-    dag=dag,
-)
-
 # Định nghĩa luồng công việc: ETL → Feature Engineering → ML Training
-run_processing >> ml_feature_engineering >> ml_model_training
+run_processing

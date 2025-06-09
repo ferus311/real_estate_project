@@ -121,29 +121,29 @@ def load_to_postgresql(
 
     if postgres_config is None:
         postgres_config = {
-            "url": "jdbc:postgresql://postgres:5432/realestate",
+            "url": "jdbc:postgresql://realestate-postgres:5432/realestate",
             "user": "postgres",
             "password": "password",
             "driver": "org.postgresql.Driver",
         }
 
-    # Transform cho PostgreSQL serving
+    # Transform cho PostgreSQL serving - theo schema thống nhất
     serving_df = gold_df.select(
         col("id").alias("property_id"),
         col("title"),
         col("price").cast("bigint"),
         col("area").cast("real"),
-        col("bedrooms").cast("int"),
-        col("bathrooms").cast("int"),
+        col("bedroom").cast("int").alias("bedrooms"),  # Map bedroom -> bedrooms
+        col("bathroom").cast("int").alias("bathrooms"),  # Map bathroom -> bathrooms
         col("province"),
         col("district"),
-        col("address"),
+        col("location").alias("address"),  # Use location as address
         col("latitude").cast("double"),
         col("longitude").cast("double"),
         col("source"),
         col("url"),
-        col("contact_name"),
-        col("contact_phone"),
+        lit(None).cast("string").alias("contact_name"),  # Null placeholder
+        lit(None).cast("string").alias("contact_phone"),  # Null placeholder
         # Computed fields
         when(col("area") > 0, col("price") / col("area"))
         .otherwise(None)

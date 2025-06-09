@@ -52,10 +52,7 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
-# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
-# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
 mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
-
 
 sudo mkdir -p /crawler/checkpoint
 if ! grep -qs ${PROJECT_DIR}/docker/volumes/crawler/checkpoint /proc/mounts; then
@@ -72,12 +69,6 @@ if ! docker network ls | grep -q hdfs_network; then
     echo -e "${BLUE}[INFO]${NC} Tạo network hdfs_network..."
     docker network create hdfs_network
     check_error "Không thể tạo network hdfs_network"
-fi
-
-if ! docker network ls | grep -q spark_network; then
-    echo -e "${BLUE}[INFO]${NC} Tạo network spark_network..."
-    docker network create spark_network
-    check_error "Không thể tạo network spark_network"
 fi
 
 if ! docker network ls | grep -q kafka_network; then
@@ -100,34 +91,26 @@ echo -e "${BLUE}[INFO]${NC} Khởi động các datanode..."
 docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d datanode1
 check_error "Không thể khởi động datanode"
 
-# # Khởi động Kafka
-# echo -e "${BLUE}[INFO]${NC} Khởi động Zookeeper và Kafka..."
-# docker compose -f ${PROJECT_DIR}/docker/yml/kafka.yml up -d zoo1 kafka1
-# check_error "Không thể khởi động Kafka"
+# Khởi động Kafka
+echo -e "${BLUE}[INFO]${NC} Khởi động Zookeeper và Kafka..."
+docker compose -f ${PROJECT_DIR}/docker/yml/kafka.yml up -d
+check_error "Không thể khởi động Kafka"
 
-# # Đợi Kafka khởi động
-# wait_for_service "Kafka" "9092" "localhost" 120
+# Đợi Kafka khởi động
+wait_for_service "Kafka" "9092" "localhost" 120
 
-# # Khởi động Airflow
-# echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
-# docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
-# check_error "Không thể khởi động Airflow"
+# Khởi động Airflow
+echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
+docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
+check_error "Không thể khởi động Airflow"
 
-# # Đợi Airflow webserver khởi động
-# wait_for_service "Airflow webserver" "8080" "localhost" 180
+# Đợi Airflow webserver khởi động
+wait_for_service "Airflow webserver" "8080" "localhost" 180
 
-
-# Khởi động Spark
-echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
-docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1 spark-processor jupyter
-check_error "Không thể khởi động Spark"
-# Đợi Spark khởi động
-wait_for_service "Spark" "8181" "localhost" 120
 
 # Khởi động crawler shell
 echo -e "${BLUE}[INFO]${NC} Thiết lập các image crawler và processor"
 docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
-docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml build spark-processor
 check_error "Không thể build image realestate-crawler-service và spark-processor"
 
 
