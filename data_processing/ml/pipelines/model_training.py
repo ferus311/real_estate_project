@@ -23,6 +23,7 @@ import os
 import json
 import joblib
 import pickle
+import tempfile
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -35,6 +36,7 @@ warnings.filterwarnings("ignore")
 # PySpark imports
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, when, isnan, isnull, broadcast, log
+from pyspark.sql.types import StructType, StructField, BinaryType
 from pyspark.ml.feature import (
     VectorAssembler,
     StandardScaler,
@@ -52,28 +54,26 @@ from pyspark.ml.regression import (
     GeneralizedLinearRegression,
 )
 
-# Advanced ML libraries (for post-Spark processing)
+# Sklearn-compatible ML libraries (XGBoost, LightGBM, CatBoost)
 try:
     import xgboost as xgb
     import lightgbm as lgb
     from catboost import CatBoostRegressor
 
-    ADVANCED_MODELS_AVAILABLE = True
+    SKLEARN_MODELS_AVAILABLE = True
 except ImportError:
-    print("⚠️ Advanced models (XGBoost, LightGBM, CatBoost) not available")
-    ADVANCED_MODELS_AVAILABLE = False
+    print("⚠️ Sklearn-compatible models (XGBoost, LightGBM, CatBoost) not available")
+    SKLEARN_MODELS_AVAILABLE = False
 
 # Add project root to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 sys.path.append(project_root)
 
 from common.config.spark_config import (
-    create_spark_session,
     create_optimized_ml_spark_session,
 )
-from common.utils.hdfs_utils import check_hdfs_path_exists
+from common.utils.hdfs_utils import check_hdfs_path_exists, create_hdfs_directory
 from common.utils.logging_utils import SparkJobLogger
-from ml.pipelines.data_preparation import MLDataPreprocessor
 
 
 class ModelConfig:
@@ -83,28 +83,17 @@ class ModelConfig:
     def get_spark_model_configs():
         """Get Spark model configurations - static method to avoid serialization"""
         return {
-            "random_forest": {
-                "class": RandomForestRegressor,
-                "params": {
-                    "featuresCol": "features",
-                    "labelCol": "price",
-                    "numTrees": 100,
-                    "maxDepth": 15,
-                    "maxBins": 64,
-                    "seed": 42,
-                },
-            },
-            "gradient_boost": {
-                "class": GBTRegressor,
-                "params": {
-                    "featuresCol": "features",
-                    "labelCol": "price",
-                    "maxIter": 100,
-                    "maxDepth": 10,
-                    "stepSize": 0.1,
-                    "seed": 42,
-                },
-            },
+            # "random_forest": {
+            #     "class": RandomForestRegressor,
+            #     "params": {
+            #         "featuresCol": "features",
+            #         "labelCol": "price",
+            #         "numTrees": 100,
+            #         "maxDepth": 15,
+            #         "maxBins": 64,
+            #         "seed": 42,
+            #     },
+            # },
             "linear_regression": {
                 "class": LinearRegression,
                 "params": {
@@ -117,9 +106,9 @@ class ModelConfig:
         }
 
     @staticmethod
-    def get_advanced_model_configs():
-        """Get advanced model configurations - static method to avoid serialization"""
-        if not ADVANCED_MODELS_AVAILABLE:
+    def get_sklearn_model_configs():
+        """Get sklearn model configurations - static method to avoid serialization"""
+        if not SKLEARN_MODELS_AVAILABLE:
             return {}
 
         return {
@@ -148,17 +137,6 @@ class ModelConfig:
                     "verbose": -1,
                 },
             },
-            "catboost": {
-                "class": CatBoostRegressor,
-                "params": {
-                    "iterations": 200,
-                    "depth": 8,
-                    "learning_rate": 0.1,
-                    "random_state": 42,
-                    "verbose": False,
-                    "thread_count": 4,  # Control threading
-                },
-            },
         }
 
 
@@ -181,7 +159,7 @@ class MLTrainer:
     ):
         # Minimize instance variables to reduce serialization overhead
         self.spark = spark_session if spark_session else self._create_spark_session()
-        self.logger = SparkJobLogger("advanced_ml_training")
+        self.logger = SparkJobLogger("ml_training_pipeline")
         self.model_output_path = model_output_path
 
         # Don't store large configurations in instance - use static methods instead
@@ -190,7 +168,7 @@ class MLTrainer:
 
     def _create_spark_session(self) -> SparkSession:
         """Create optimized Spark session for ML workloads"""
-        return create_optimized_ml_spark_session("Advanced_ML_Training")
+        return create_optimized_ml_spark_session("ML_Training")
 
     def read_ml_features(
         self, date: str, property_type: str = "house", lookback_days: int = 30
@@ -367,6 +345,135 @@ class MLTrainer:
             }
 
         return df, metadata
+
+    def _create_temporal_split(
+        self, df: Any, train_ratio: float = 0.8
+    ) -> Tuple[Any, Any]:
+        """📅 Create time-aware data split for real estate training"""
+        self.logger.logger.info("📅 Creating temporal data split...")
+
+        # Check if listing_date column exists
+        if "listing_date" in df.columns:
+            # Sort by listing_date for temporal split
+            df_sorted = df.orderBy("listing_date")
+
+            total_count = df_sorted.count()
+            train_size = int(total_count * train_ratio)
+
+            # Take earlier data for training, later data for testing
+            train_df = df_sorted.limit(train_size)
+            test_df = df_sorted.offset(train_size)
+
+            self.logger.logger.info("✅ Using temporal split based on listing_date")
+
+        else:
+            # Fallback to random split if no date column
+            self.logger.logger.warning("⚠️ No listing_date found, using random split")
+            train_df, test_df = df.randomSplit([train_ratio, 1 - train_ratio], seed=42)
+
+        return train_df, test_df
+
+    def _calculate_business_metrics(self, predictions_df: Any) -> Dict[str, float]:
+        """📊 Calculate real estate business-specific metrics"""
+        try:
+            # Convert to Pandas for detailed analysis
+            predictions_pandas = predictions_df.select("price", "prediction").toPandas()
+
+            y_true = predictions_pandas["price"].values
+            y_pred = predictions_pandas["prediction"].values
+
+            # Calculate percentage errors
+            errors = np.abs(y_true - y_pred)
+            percentage_errors = errors / y_true
+
+            # Accuracy thresholds - key business metrics
+            within_10_pct = np.mean(percentage_errors <= 0.10) * 100
+            within_20_pct = np.mean(percentage_errors <= 0.20) * 100
+            within_30_pct = np.mean(percentage_errors <= 0.30) * 100
+
+            # Price range analysis
+            budget_mask = y_true < 3_000_000_000  # Under 3B VND
+            mid_range_mask = (y_true >= 3_000_000_000) & (
+                y_true < 10_000_000_000
+            )  # 3-10B VND
+            luxury_mask = y_true >= 10_000_000_000  # Above 10B VND
+
+            business_metrics = {
+                "within_10_percent": within_10_pct,
+                "within_20_percent": within_20_pct,
+                "within_30_percent": within_30_pct,
+                "median_error": float(np.median(errors)),
+                "mean_percentage_error": float(np.mean(percentage_errors) * 100),
+                "outlier_percentage": float(
+                    np.mean(errors > np.percentile(errors, 95)) * 100
+                ),
+            }
+
+            # Add range-specific metrics if enough samples
+            if budget_mask.sum() > 10:
+                business_metrics["budget_mae"] = float(np.mean(errors[budget_mask]))
+            if mid_range_mask.sum() > 10:
+                business_metrics["mid_range_mae"] = float(
+                    np.mean(errors[mid_range_mask])
+                )
+            if luxury_mask.sum() > 10:
+                business_metrics["luxury_mae"] = float(np.mean(errors[luxury_mask]))
+
+            return business_metrics
+
+        except Exception as e:
+            self.logger.logger.warning(f"⚠️ Could not calculate business metrics: {e}")
+            return {}
+
+    def _calculate_sklearn_business_metrics(
+        self, y_true: np.ndarray, y_pred: np.ndarray
+    ) -> Dict[str, float]:
+        """📊 Calculate real estate business-specific metrics for sklearn models"""
+        try:
+            # Calculate percentage errors
+            errors = np.abs(y_true - y_pred)
+            percentage_errors = errors / y_true
+
+            # Accuracy thresholds - key business metrics
+            within_10_pct = np.mean(percentage_errors <= 0.10) * 100
+            within_20_pct = np.mean(percentage_errors <= 0.20) * 100
+            within_30_pct = np.mean(percentage_errors <= 0.30) * 100
+
+            # Price range analysis
+            budget_mask = y_true < 3_000_000_000  # Under 3B VND
+            mid_range_mask = (y_true >= 3_000_000_000) & (
+                y_true < 10_000_000_000
+            )  # 3-10B VND
+            luxury_mask = y_true >= 10_000_000_000  # Above 10B VND
+
+            business_metrics = {
+                "within_10_percent": within_10_pct,
+                "within_20_percent": within_20_pct,
+                "within_30_percent": within_30_pct,
+                "median_error": float(np.median(errors)),
+                "mean_percentage_error": float(np.mean(percentage_errors) * 100),
+                "outlier_percentage": float(
+                    np.mean(errors > np.percentile(errors, 95)) * 100
+                ),
+            }
+
+            # Add range-specific metrics if enough samples
+            if budget_mask.sum() > 10:
+                business_metrics["budget_mae"] = float(np.mean(errors[budget_mask]))
+            if mid_range_mask.sum() > 10:
+                business_metrics["mid_range_mae"] = float(
+                    np.mean(errors[mid_range_mask])
+                )
+            if luxury_mask.sum() > 10:
+                business_metrics["luxury_mae"] = float(np.mean(errors[luxury_mask]))
+
+            return business_metrics
+
+        except Exception as e:
+            self.logger.logger.warning(
+                f"⚠️ Could not calculate sklearn business metrics: {e}"
+            )
+            return {}
 
     def validate_vector_features(self, df: Any) -> Any:
         """🔍 Validate that vector features don't contain NaN or Infinity values using pure Spark functions"""
@@ -551,8 +658,8 @@ class MLTrainer:
 
         self.logger.logger.info(f"🧹 Cleaned dataset: {clean_count:,} valid records")
 
-        # Split data efficiently
-        train_df, test_df = clean_df.randomSplit([0.8, 0.2], seed=42)
+        # Time-aware data splitting for better real estate model validation
+        train_df, test_df = self._create_temporal_split(clean_df)
 
         # Cache split datasets
         train_df.cache()
@@ -562,7 +669,9 @@ class MLTrainer:
         train_count = train_df.count()
         test_count = test_df.count()
 
-        self.logger.logger.info(f"Train set: {train_count:,}, Test set: {test_count:,}")
+        self.logger.logger.info(
+            f"📅 Time-aware split - Train set: {train_count:,}, Test set: {test_count:,}"
+        )
 
         models = {}
 
@@ -601,16 +710,22 @@ class MLTrainer:
                 mae = mae_evaluator.evaluate(predictions)
                 r2 = r2_evaluator.evaluate(predictions)
 
+                # Calculate business-specific metrics
+                business_metrics = self._calculate_business_metrics(predictions)
+
                 models[model_name] = {
                     "model": trained_model,
                     "rmse": rmse,
                     "mae": mae,
                     "r2": r2,
                     "model_type": "spark",
+                    "business_metrics": business_metrics,
                 }
 
+                # Enhanced logging with business metrics
+                within_20_pct = business_metrics.get("within_20_percent", "N/A")
                 self.logger.logger.info(
-                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}"
+                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}, Within 20%: {within_20_pct}%"
                 )
 
                 # Clean up predictions cache
@@ -625,13 +740,13 @@ class MLTrainer:
 
         return models
 
-    def train_advanced_models(self, df: Any) -> Dict[str, Dict]:
-        """🚀 Train advanced models with optimized data conversion"""
-        if not ADVANCED_MODELS_AVAILABLE:
-            self.logger.logger.warning("⚠️ Advanced models not available")
+    def train_sklearn_models(self, df: Any) -> Dict[str, Dict]:
+        """🚀 Train sklearn models with optimized data conversion"""
+        if not SKLEARN_MODELS_AVAILABLE:
+            self.logger.logger.warning("⚠️ Sklearn models not available")
             return {}
 
-        self.logger.logger.info("🚀 Training advanced models...")
+        self.logger.logger.info("🚀 Training sklearn models...")
 
         # Efficient Spark to Pandas conversion with sampling for large datasets
         total_records = df.count()
@@ -643,10 +758,16 @@ class MLTrainer:
                 withReplacement=False, fraction=sample_ratio, seed=42
             )
             self.logger.logger.info(
-                f"Sampling {sample_ratio:.3f} of data for advanced models"
+                f"Sampling {sample_ratio:.3f} of data for sklearn models"
             )
         else:
-            df_sampled = df
+            df_sampled = df.sample(withReplacement=False, fraction=0.50, seed=42)
+            # df_sampled = df
+
+        # log ra xem data the nao di
+        self.logger.logger.info(
+            f"📊 Sampled dataset: {df_sampled.count():,} records for sklearn models"
+        )
 
         # Convert to Pandas efficiently
         pandas_df = df_sampled.select("features", "price", "log_price").toPandas()
@@ -666,7 +787,7 @@ class MLTrainer:
         models = {}
 
         # Get model configs using static method
-        model_configs = ModelConfig.get_advanced_model_configs()
+        model_configs = ModelConfig.get_sklearn_model_configs()
 
         for model_name, config in model_configs.items():
             self.logger.logger.info(f"🏋️ Training {model_name}...")
@@ -694,16 +815,24 @@ class MLTrainer:
                 mae = mean_absolute_error(y_test, y_pred)
                 r2 = r2_score(y_test, y_pred)
 
+                # Calculate business-specific metrics for sklearn models
+                business_metrics = self._calculate_sklearn_business_metrics(
+                    y_test, y_pred
+                )
+
                 models[model_name] = {
                     "model": model,
                     "rmse": rmse,
                     "mae": mae,
                     "r2": r2,
                     "model_type": "sklearn",
+                    "business_metrics": business_metrics,
                 }
 
+                # Enhanced logging with business metrics
+                within_20_pct = business_metrics.get("within_20_percent", "N/A")
                 self.logger.logger.info(
-                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}"
+                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}, Within 20%: {within_20_pct}%"
                 )
 
             except Exception as e:
@@ -712,14 +841,35 @@ class MLTrainer:
         return models
 
     def create_ensemble_model(self, models: Dict[str, Dict]) -> Dict[str, Any]:
-        """🎯 Create ensemble model from best performers with optimized weights"""
-        self.logger.logger.info("🎯 Creating ensemble model...")
+        """🎯 Create enhanced ensemble model considering both accuracy and business metrics"""
+        self.logger.logger.info("🎯 Creating enhanced ensemble model...")
 
-        # Select top 3 models by R² score
-        sorted_models = sorted(models.items(), key=lambda x: x[1]["r2"], reverse=True)
-        top_models = dict(sorted_models[:3])
+        if not models:
+            self.logger.logger.warning("⚠️ No models available for ensemble")
+            return {}
 
-        self.logger.logger.info(f"Top models for ensemble: {list(top_models.keys())}")
+        # Enhanced model selection considering business metrics
+        model_scores = []
+        for name, model_info in models.items():
+            r2_score = model_info.get("r2", 0)
+            business_metrics = model_info.get("business_metrics", {})
+            within_20_pct = business_metrics.get("within_20_percent", 0)
+
+            # Composite score: 70% R² + 30% business accuracy
+            composite_score = (0.7 * r2_score) + (0.3 * within_20_pct / 100)
+
+            model_scores.append((name, model_info, composite_score))
+            self.logger.logger.info(
+                f"   {name}: R²={r2_score:.3f}, Within20%={within_20_pct:.1f}%, Composite={composite_score:.3f}"
+            )
+
+        # Sort by composite score and select top 3
+        sorted_models = sorted(model_scores, key=lambda x: x[2], reverse=True)
+        top_models = {name: model_info for name, model_info, _ in sorted_models[:3]}
+
+        self.logger.logger.info(
+            f"📊 Top models for ensemble: {list(top_models.keys())}"
+        )
 
         # Calculate weights efficiently
         weights = {}
@@ -736,6 +886,134 @@ class MLTrainer:
             "ensemble_type": "weighted_average",
         }
 
+    def verify_saved_models(self, model_dir: str, models: Dict) -> Dict[str, bool]:
+        """🔍 Verify that all models were saved successfully"""
+        verification_results = {}
+
+        self.logger.logger.info("🔍 Verifying saved models...")
+
+        for name, model in models.items():
+            if model["model_type"] == "spark":
+                spark_model_path = f"{model_dir}/spark_models/{name}"
+                try:
+                    if check_hdfs_path_exists(self.spark, spark_model_path):
+                        verification_results[f"spark_{name}"] = True
+                        self.logger.logger.info(f"✅ Verified Spark model: {name}")
+                    else:
+                        verification_results[f"spark_{name}"] = False
+                        self.logger.logger.warning(f"⚠️ Spark model not found: {name}")
+                except Exception as e:
+                    verification_results[f"spark_{name}"] = False
+                    self.logger.logger.error(
+                        f"❌ Error verifying Spark model {name}: {e}"
+                    )
+
+            elif model["model_type"] == "sklearn":
+                sklearn_model_file = f"{model_dir}/sklearn_models/{name}_model.pkl"
+                try:
+                    # For HDFS paths, use HDFS check; for local paths, use os.path.exists
+                    if model_dir.startswith("/data/"):
+                        # Check HDFS path
+                        if check_hdfs_path_exists(self.spark, sklearn_model_file):
+                            verification_results[f"sklearn_{name}"] = True
+                            # Get file size using Hadoop filesystem
+                            try:
+                                hadoop_config = (
+                                    self.spark.sparkContext._jsc.hadoopConfiguration()
+                                )
+                                hadoop_fs = self.spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(
+                                    hadoop_config
+                                )
+                                hdfs_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                                    sklearn_model_file
+                                )
+                                file_size = hadoop_fs.getFileStatus(
+                                    hdfs_path
+                                ).getLen() / (
+                                    1024 * 1024
+                                )  # MB
+                                self.logger.logger.info(
+                                    f"✅ Verified sklearn model on HDFS: {name} ({file_size:.2f} MB)"
+                                )
+                            except:
+                                self.logger.logger.info(
+                                    f"✅ Verified sklearn model on HDFS: {name}"
+                                )
+                        else:
+                            verification_results[f"sklearn_{name}"] = False
+                            self.logger.logger.warning(
+                                f"⚠️ Sklearn model not found on HDFS: {name}"
+                            )
+                    else:
+                        # Check local path
+                        if os.path.exists(sklearn_model_file):
+                            verification_results[f"sklearn_{name}"] = True
+                            file_size = os.path.getsize(sklearn_model_file) / (
+                                1024 * 1024
+                            )  # MB
+                            self.logger.logger.info(
+                                f"✅ Verified sklearn model locally: {name} ({file_size:.2f} MB)"
+                            )
+                        else:
+                            verification_results[f"sklearn_{name}"] = False
+                            self.logger.logger.warning(
+                                f"⚠️ Sklearn model not found locally: {name}"
+                            )
+                except Exception as e:
+                    verification_results[f"sklearn_{name}"] = False
+                    self.logger.logger.error(
+                        f"❌ Error verifying sklearn model {name}: {e}"
+                    )
+
+        # Check preprocessing pipeline
+        preprocessing_path = f"{model_dir}/preprocessing_pipeline"
+        try:
+            if check_hdfs_path_exists(self.spark, preprocessing_path):
+                verification_results["preprocessing_pipeline"] = True
+                self.logger.logger.info("✅ Verified preprocessing pipeline")
+            else:
+                verification_results["preprocessing_pipeline"] = False
+                self.logger.logger.warning("⚠️ Preprocessing pipeline not found")
+        except Exception as e:
+            verification_results["preprocessing_pipeline"] = False
+            self.logger.logger.error(f"❌ Error verifying preprocessing pipeline: {e}")
+
+        # Summary
+        successful_saves = sum(verification_results.values())
+        total_expected = len(verification_results)
+        success_rate = successful_saves / total_expected if total_expected > 0 else 0
+
+        self.logger.logger.info(
+            f"📊 Model save verification: {successful_saves}/{total_expected} successful ({success_rate:.1%})"
+        )
+
+        return verification_results
+
+    def debug_model_info(self, models: Dict, stage: str = "training") -> None:
+        """🔍 Debug information about models"""
+        self.logger.logger.info(f"🔍 Model Debug Info - {stage}")
+        self.logger.logger.info(
+            f"   Sklearn models available: {SKLEARN_MODELS_AVAILABLE}"
+        )
+        self.logger.logger.info(f"   Total models: {len(models)}")
+
+        for name, model in models.items():
+            model_type = model.get("model_type", "unknown")
+            r2_score = model.get("r2", 0)
+            self.logger.logger.info(f"   - {name}: {model_type} (R²={r2_score:.3f})")
+
+        spark_models = [
+            name for name, model in models.items() if model.get("model_type") == "spark"
+        ]
+        sklearn_models = [
+            name
+            for name, model in models.items()
+            if model.get("model_type") == "sklearn"
+        ]
+
+        self.logger.logger.info(f"   Spark models: {spark_models}")
+        self.logger.logger.info(f"   Sklearn models: {sklearn_models}")
+
     def save_models(
         self,
         models: Dict,
@@ -746,6 +1024,9 @@ class MLTrainer:
     ) -> str:
         """💾 Save all models with versioning and optimized serialization"""
         self.logger.logger.info("💾 Saving models...")
+
+        # Debug model information
+        self.debug_model_info(models, "before_saving")
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_dir = f"{self.model_output_path}/{property_type}/{date}"
@@ -803,21 +1084,234 @@ class MLTrainer:
             preprocessing_path = f"{model_dir}/preprocessing_pipeline"
             preprocessing_model.write().overwrite().save(preprocessing_path)
 
-            # Save advanced models with optimized serialization
-            if ADVANCED_MODELS_AVAILABLE:
+            # Save sklearn models with optimized serialization
+            if SKLEARN_MODELS_AVAILABLE:
+                sklearn_models_dir = f"{model_dir}/sklearn_models"
+
+                # Count sklearn models to save
+                sklearn_models_count = sum(
+                    1 for model in models.values() if model["model_type"] == "sklearn"
+                )
+                self.logger.logger.info(
+                    f"📦 Saving {sklearn_models_count} sklearn models..."
+                )
+
+                # Create sklearn models directory properly
+                sklearn_models_dir = f"{model_dir}/sklearn_models"
+
+                try:
+                    # For HDFS paths, use create_hdfs_directory utility
+                    if model_dir.startswith("/data/"):
+                        self.logger.logger.info(
+                            f"📁 Creating HDFS directory: {sklearn_models_dir}"
+                        )
+
+                        # Use create_hdfs_directory from utils
+                        success = create_hdfs_directory(self.spark, sklearn_models_dir)
+
+                        if not success:
+                            # Alternative approach: create using Spark DataFrame write
+                            self.logger.logger.info(
+                                "🔄 Trying alternative directory creation..."
+                            )
+                            dummy_df = self.spark.createDataFrame([{"temp": "data"}])
+                            temp_path = f"{sklearn_models_dir}/.mkdir_temp"
+                            dummy_df.write.mode("overwrite").parquet(temp_path)
+
+                            # Clean up temp file
+                            try:
+                                hadoop_config = (
+                                    self.spark.sparkContext._jsc.hadoopConfiguration()
+                                )
+                                hadoop_fs = self.spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(
+                                    hadoop_config
+                                )
+                                temp_hadoop_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                                    temp_path
+                                )
+                                hadoop_fs.delete(temp_hadoop_path, True)
+                                self.logger.logger.info(
+                                    "✅ HDFS directory created successfully"
+                                )
+                            except Exception as cleanup_error:
+                                self.logger.logger.warning(
+                                    f"⚠️ Could not clean up temp file: {cleanup_error}"
+                                )
+                        else:
+                            self.logger.logger.info(
+                                "✅ HDFS directory created successfully"
+                            )
+
+                    else:
+                        # For local paths, use standard os.makedirs
+                        os.makedirs(sklearn_models_dir, exist_ok=True)
+                        self.logger.logger.info(
+                            f"✅ Local directory created: {sklearn_models_dir}"
+                        )
+
+                except Exception as e:
+                    self.logger.logger.warning(
+                        f"⚠️ Could not create sklearn models directory: {e}"
+                    )
+                    # Fallback: use local temp directory
+                    sklearn_models_dir = tempfile.mkdtemp(prefix="sklearn_models_")
+                    self.logger.logger.info(
+                        f"📁 Using fallback directory: {sklearn_models_dir}"
+                    )
+
+                # Save sklearn models with proper HDFS handling
                 for name, model in models.items():
                     if model["model_type"] == "sklearn":
-                        model_file = f"{model_dir}/advanced_models/{name}_model.pkl"
-                        os.makedirs(os.path.dirname(model_file), exist_ok=True)
+                        hdfs_model_path = f"{sklearn_models_dir}/{name}_model.pkl"
 
-                        # Use joblib for better compression and performance
-                        joblib.dump(model["model"], model_file, compress=3)
+                        try:
+                            # For HDFS paths, save to local temp first, then copy to HDFS
+                            if model_dir.startswith("/data/"):
+                                # Step 1: Save to local temp file
+                                local_temp_dir = tempfile.mkdtemp(
+                                    prefix=f"sklearn_{name}_"
+                                )
+                                local_model_file = f"{local_temp_dir}/{name}_model.pkl"
+
+                                # Save using joblib to local file
+                                joblib.dump(
+                                    model["model"], local_model_file, compress=3
+                                )
+
+                                if not os.path.exists(local_model_file):
+                                    raise FileNotFoundError(
+                                        f"Failed to create local temp file: {local_model_file}"
+                                    )
+
+                                local_file_size = os.path.getsize(local_model_file) / (
+                                    1024 * 1024
+                                )  # MB
+                                self.logger.logger.info(
+                                    f"📦 Created local temp file: {local_model_file} ({local_file_size:.2f} MB)"
+                                )
+
+                                # Step 2: Copy local file to HDFS using Hadoop filesystem
+                                try:
+                                    # Use Hadoop filesystem API to copy the actual .pkl file
+                                    hadoop_config = (
+                                        self.spark.sparkContext._jsc.hadoopConfiguration()
+                                    )
+                                    hadoop_fs = self.spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(
+                                        hadoop_config
+                                    )
+
+                                    # Convert paths to Hadoop Path objects
+                                    local_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                                        f"file://{local_model_file}"
+                                    )
+                                    hdfs_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                                        hdfs_model_path
+                                    )
+
+                                    # Copy file from local to HDFS
+                                    hadoop_fs.copyFromLocalFile(local_path, hdfs_path)
+
+                                    # Verify HDFS file exists
+                                    if hadoop_fs.exists(hdfs_path):
+                                        hdfs_file_size = hadoop_fs.getFileStatus(
+                                            hdfs_path
+                                        ).getLen() / (
+                                            1024 * 1024
+                                        )  # MB
+                                        self.logger.logger.info(
+                                            f"✅ Sklearn model copied to HDFS: {name} -> {hdfs_model_path} ({hdfs_file_size:.2f} MB)"
+                                        )
+                                    else:
+                                        raise Exception(
+                                            "HDFS copy verification failed - file not found"
+                                        )
+
+                                except Exception as hdfs_error:
+                                    self.logger.logger.warning(
+                                        f"⚠️ HDFS copy failed for {name}: {hdfs_error}"
+                                    )
+                                    # Keep the local temp file as fallback
+                                    self.logger.logger.info(
+                                        f"📁 Model available at local fallback: {local_model_file}"
+                                    )
+
+                                # Step 3: Clean up local temp file (optional - keep for now as backup)
+                                # We'll keep the temp file as a backup in case HDFS access fails later
+
+                            else:
+                                # For local paths, save directly
+                                os.makedirs(
+                                    os.path.dirname(hdfs_model_path), exist_ok=True
+                                )
+                                joblib.dump(model["model"], hdfs_model_path, compress=3)
+
+                                if os.path.exists(hdfs_model_path):
+                                    file_size = os.path.getsize(hdfs_model_path) / (
+                                        1024 * 1024
+                                    )  # MB
+                                    self.logger.logger.info(
+                                        f"✅ Saved sklearn model locally: {name} -> {hdfs_model_path} ({file_size:.2f} MB)"
+                                    )
+                                else:
+                                    raise FileNotFoundError(
+                                        f"Model file was not created: {hdfs_model_path}"
+                                    )
+
+                        except Exception as e:
+                            self.logger.logger.error(
+                                f"❌ Failed to save sklearn model {name}: {e}"
+                            )
+
+                            # Final fallback: save to local temp directory only
+                            try:
+                                local_temp_dir = tempfile.mkdtemp(
+                                    prefix=f"sklearn_fallback_{name}_"
+                                )
+                                local_model_file = f"{local_temp_dir}/{name}_model.pkl"
+
+                                joblib.dump(
+                                    model["model"], local_model_file, compress=3
+                                )
+
+                                if os.path.exists(local_model_file):
+                                    file_size = os.path.getsize(local_model_file) / (
+                                        1024 * 1024
+                                    )  # MB
+                                    self.logger.logger.info(
+                                        f"✅ Saved sklearn model to fallback location: {name} -> {local_model_file} ({file_size:.2f} MB)"
+                                    )
+                                else:
+                                    self.logger.logger.error(
+                                        f"❌ Failed to create fallback file for {name}"
+                                    )
+
+                            except Exception as fallback_error:
+                                self.logger.logger.error(
+                                    f"❌ Final fallback failed for {name}: {fallback_error}"
+                                )
+
+            else:
+                self.logger.logger.warning("⚠️ Sklearn models not available for saving")
 
             # Save model registry efficiently
             registry_df = self.spark.createDataFrame(
                 [{"registry": json.dumps(model_registry, indent=2)}]
             )
             registry_df.write.mode("overwrite").json(f"{model_dir}/model_registry.json")
+
+            # Verify all models were saved successfully
+            verification_results = self.verify_saved_models(model_dir, models)
+
+            # Log verification results
+            failed_saves = [
+                name for name, success in verification_results.items() if not success
+            ]
+            if failed_saves:
+                self.logger.logger.warning(
+                    f"⚠️ Some models failed to save: {failed_saves}"
+                )
+            else:
+                self.logger.logger.info("✅ All models verified successfully")
 
             self.logger.logger.info(f"✅ Models saved to: {model_dir}")
             self.logger.logger.info(
@@ -834,11 +1328,11 @@ class MLTrainer:
         self,
         date: str,
         property_type: str = "house",
-        enable_advanced_models: bool = True,
+        enable_sklearn_models: bool = True,
     ) -> Dict[str, Any]:
-        """🚀 Run complete advanced ML training pipeline with optimized performance"""
+        """🚀 Run complete ML training pipeline with optimized performance"""
         self.logger.logger.info(
-            "🚀 Starting Advanced ML Training Pipeline (Performance Optimized)"
+            "🚀 Starting ML Training Pipeline (Performance Optimized)"
         )
         self.logger.logger.info("=" * 80)
 
@@ -852,13 +1346,13 @@ class MLTrainer:
             # Step 3: Train Spark models with reduced serialization overhead
             spark_models = self.train_spark_models(df_ml)
 
-            # Step 4: Train advanced models if available and enabled
-            advanced_models = {}
-            if enable_advanced_models and ADVANCED_MODELS_AVAILABLE:
-                advanced_models = self.train_advanced_models(df_ml)
+            # Step 4: Train sklearn models if available and enabled
+            sklearn_models = {}
+            if enable_sklearn_models and SKLEARN_MODELS_AVAILABLE:
+                sklearn_models = self.train_sklearn_models(df_ml)
 
             # Step 5: Combine all models efficiently
-            all_models = {**spark_models, **advanced_models}
+            all_models = {**spark_models, **sklearn_models}
 
             if not all_models:
                 raise Exception("No models were successfully trained")
@@ -871,23 +1365,52 @@ class MLTrainer:
                 all_models, ensemble, preprocessing_model, date, property_type
             )
 
-            # Step 8: Generate performance summary
+            # Step 8: Validate production quality
             best_model_name = max(all_models.keys(), key=lambda k: all_models[k]["r2"])
             best_model = all_models[best_model_name]
+
+            # Run production quality validation
+            quality_validation = self._validate_production_quality(best_model)
+
+            # Include business metrics if available
+            business_metrics = best_model.get("business_metrics", {})
+
+            # Enhanced metrics with business KPIs
+            enhanced_metrics = {
+                "rmse": float(best_model["rmse"]),
+                "mae": float(best_model["mae"]),
+                "r2": float(best_model["r2"]),
+            }
+
+            # Add business metrics to main metrics
+            if business_metrics:
+                enhanced_metrics.update(
+                    {
+                        "within_20_percent": business_metrics.get(
+                            "within_20_percent", 0
+                        ),
+                        "median_error": business_metrics.get("median_error", 0),
+                        "outlier_percentage": business_metrics.get(
+                            "outlier_percentage", 0
+                        ),
+                    }
+                )
 
             result = {
                 "success": True,
                 "best_model": best_model_name,
                 "model_path": model_path,
-                "metrics": {
-                    "rmse": float(best_model["rmse"]),
-                    "mae": float(best_model["mae"]),
-                    "r2": float(best_model["r2"]),
-                },
+                "metrics": enhanced_metrics,
+                "business_metrics": business_metrics,
+                "quality_validation": quality_validation,
                 "total_models_trained": len(all_models),
-                "ensemble_models": len(ensemble["models"]),
-                "production_ready": best_model["r2"] > 0.7,
+                "ensemble_models": len(ensemble.get("models", [])),
+                "production_ready": quality_validation["production_ready"],
+                "quality_score": quality_validation["quality_score"],
                 "performance_optimizations": {
+                    "temporal_splitting_enabled": True,
+                    "business_metrics_calculated": bool(business_metrics),
+                    "production_quality_validated": True,
                     "broadcast_warnings_resolved": True,
                     "memory_efficient": True,
                     "serialization_optimized": True,
@@ -901,7 +1424,7 @@ class MLTrainer:
                 df_ml.unpersist()
 
             self.logger.logger.info("=" * 80)
-            self.logger.logger.info("🎉 Advanced ML Training Pipeline Completed!")
+            self.logger.logger.info("🎉 ML Training Pipeline Completed!")
             self.logger.logger.info(f"🏆 Best Model: {best_model_name}")
             self.logger.logger.info(f"📊 RMSE: {best_model['rmse']:,.0f} VND")
             self.logger.logger.info(f"📊 MAE: {best_model['mae']:,.0f} VND")
@@ -990,6 +1513,123 @@ class MLTrainer:
             self.logger.logger.error(f"❌ Error scanning for recent features: {e}")
             return []
 
+    def _validate_production_quality(
+        self, best_model: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """✅ Validate if model meets production quality standards"""
+        self.logger.logger.info("✅ Validating production quality standards...")
+
+        # Default production requirements for real estate models
+        requirements = {
+            "min_r2": 0.70,  # Minimum R² score
+            "max_mape": 0.30,  # Maximum 30% MAPE
+            "min_within_20_percent": 60.0,  # At least 60% within 20% accuracy
+            "max_outliers_percentage": 15.0,  # Maximum 15% outliers
+        }
+
+        validation_results = {
+            "production_ready": True,
+            "validation_checks": {},
+            "warnings": [],
+            "failures": [],
+        }
+
+        # Extract metrics
+        r2 = best_model.get("r2", 0)
+        business_metrics = best_model.get("business_metrics", {})
+
+        # Check R² score
+        r2_check = r2 >= requirements["min_r2"]
+        validation_results["validation_checks"]["r2_check"] = {
+            "passed": r2_check,
+            "actual": r2,
+            "required": requirements["min_r2"],
+        }
+
+        if not r2_check:
+            validation_results["production_ready"] = False
+            validation_results["failures"].append(
+                f"R² score too low: {r2:.3f} < {requirements['min_r2']}"
+            )
+
+        # Check business metrics if available
+        if business_metrics:
+            # Check accuracy within 20%
+            within_20_pct = business_metrics.get("within_20_percent", 0)
+            within_20_check = within_20_pct >= requirements["min_within_20_percent"]
+            validation_results["validation_checks"]["within_20_check"] = {
+                "passed": within_20_check,
+                "actual": within_20_pct,
+                "required": requirements["min_within_20_percent"],
+            }
+
+            if not within_20_check:
+                validation_results["production_ready"] = False
+                validation_results["failures"].append(
+                    f"Accuracy within 20% too low: {within_20_pct:.1f}% < {requirements['min_within_20_percent']}%"
+                )
+
+            # Check MAPE if available
+            mape = (
+                business_metrics.get("mean_percentage_error", 100) / 100
+            )  # Convert to decimal
+            if mape > 0:
+                mape_check = mape <= requirements["max_mape"]
+                validation_results["validation_checks"]["mape_check"] = {
+                    "passed": mape_check,
+                    "actual": mape,
+                    "required": requirements["max_mape"],
+                }
+
+                if not mape_check:
+                    validation_results["production_ready"] = False
+                    validation_results["failures"].append(
+                        f"MAPE too high: {mape:.3f} > {requirements['max_mape']}"
+                    )
+
+            # Check outliers percentage
+            outliers_pct = business_metrics.get("outlier_percentage", 0)
+            outliers_check = outliers_pct <= requirements["max_outliers_percentage"]
+            validation_results["validation_checks"]["outliers_check"] = {
+                "passed": outliers_check,
+                "actual": outliers_pct,
+                "required": requirements["max_outliers_percentage"],
+            }
+
+            if not outliers_check:
+                validation_results["warnings"].append(
+                    f"High outliers percentage: {outliers_pct:.1f}% > {requirements['max_outliers_percentage']}%"
+                )
+
+        # Calculate quality score
+        total_checks = len(validation_results["validation_checks"])
+        passed_checks = sum(
+            1
+            for check in validation_results["validation_checks"].values()
+            if check["passed"]
+        )
+        validation_results["quality_score"] = (
+            passed_checks / total_checks if total_checks > 0 else 0
+        )
+
+        # Log results
+        if validation_results["production_ready"]:
+            self.logger.logger.info("✅ Model meets production quality standards")
+            self.logger.logger.info(
+                f"📊 Quality score: {validation_results['quality_score']:.2%}"
+            )
+        else:
+            self.logger.logger.warning(
+                "⚠️ Model does not meet production quality standards"
+            )
+            for failure in validation_results["failures"]:
+                self.logger.logger.warning(f"   ❌ {failure}")
+
+        for warning in validation_results["warnings"]:
+            self.logger.logger.warning(f"   ⚠️ {warning}")
+
+        return validation_results
+
     # ...existing code...
 
 
@@ -1067,7 +1707,7 @@ class MLModelTrainer:
 
             # Run training pipeline
             training_result = trainer.run_training_pipeline(
-                date=date, property_type=property_type, enable_advanced_models=True
+                date=date, property_type=property_type, enable_sklearn_models=True
             )
 
             if not training_result["success"]:
@@ -1131,10 +1771,10 @@ def run_ml_training(
     spark: SparkSession,
     input_date: str,
     property_type: str = "house",
-    enable_advanced_models: bool = True,
+    enable_sklearn_models: bool = True,
 ) -> bool:
     """
-    Run the advanced ML training pipeline with performance optimizations
+    Run the ML training pipeline with performance optimizations
 
     This function is designed to work efficiently with Spark and avoid
     large task binary broadcasts by using optimized data handling.
@@ -1145,7 +1785,7 @@ def run_ml_training(
 
         # Run training pipeline
         result = trainer.run_training_pipeline(
-            input_date, property_type, enable_advanced_models
+            input_date, property_type, enable_sklearn_models
         )
 
         # Clean up trainer to release memory
@@ -1163,12 +1803,12 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Advanced ML Training Pipeline (Performance Optimized)"
+        description="ML Training Pipeline (Performance Optimized)"
     )
     parser.add_argument("--date", required=True, help="Training date (YYYY-MM-DD)")
     parser.add_argument("--property-type", default="house", help="Property type")
     parser.add_argument(
-        "--no-advanced", action="store_true", help="Disable advanced models"
+        "--no-sklearn", action="store_true", help="Disable sklearn models"
     )
 
     args = parser.parse_args()
@@ -1179,7 +1819,7 @@ def main():
     try:
         # Run training with performance optimizations
         result = trainer.run_training_pipeline(
-            args.date, args.property_type, enable_advanced_models=not args.no_advanced
+            args.date, args.property_type, enable_sklearn_models=not args.no_sklearn
         )
 
         if result["success"]:

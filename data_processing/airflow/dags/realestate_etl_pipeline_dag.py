@@ -18,7 +18,7 @@ default_args = {
 }
 
 dag = DAG(
-    "realestate_full_pipeline_daily",
+    "realestate_etl_pipeline_daily",
     default_args=default_args,
     description="Pipeline đầy đủ: Crawler -> Storage -> Xử lý dữ liệu",
     # schedule_interval="0 2 * * *",  # Chạy vào 2 giờ sáng hàng ngày

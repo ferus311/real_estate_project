@@ -100,26 +100,27 @@ echo -e "${BLUE}[INFO]${NC} Khởi động các datanode..."
 docker compose -f ${PROJECT_DIR}/docker/yml/hdfs.yml up -d datanode1
 check_error "Không thể khởi động datanode"
 
-# # Khởi động Kafka
-# echo -e "${BLUE}[INFO]${NC} Khởi động Zookeeper và Kafka..."
-# docker compose -f ${PROJECT_DIR}/docker/yml/kafka.yml up -d zoo1 kafka1
-# check_error "Không thể khởi động Kafka"
+# Khởi động Kafka
+echo -e "${BLUE}[INFO]${NC} Khởi động Zookeeper và Kafka..."
+docker compose -f ${PROJECT_DIR}/docker/yml/kafka.yml up -d zoo1 kafka1
+check_error "Không thể khởi động Kafka"
 
-# # Đợi Kafka khởi động
-# wait_for_service "Kafka" "9092" "localhost" 120
+# Đợi Kafka khởi động
+wait_for_service "Kafka" "9092" "localhost" 120
 
-# # Khởi động Airflow
-# echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
-# docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
-# check_error "Không thể khởi động Airflow"
+# Khởi động Airflow
+echo -e "${BLUE}[INFO]${NC} Khởi động Airflow..."
+docker compose -f ${PROJECT_DIR}/docker/yml/airflow.yml up -d
+check_error "Không thể khởi động Airflow"
 
-# # Đợi Airflow webserver khởi động
-# wait_for_service "Airflow webserver" "8080" "localhost" 180
+# Đợi Airflow webserver khởi động
+wait_for_service "Airflow webserver" "8080" "localhost" 180
 
 
 # Khởi động Spark
 echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
-docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1 spark-processor jupyter
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1
+# docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1 spark-processor jupyter
 check_error "Không thể khởi động Spark"
 # Đợi Spark khởi động
 wait_for_service "Spark" "8181" "localhost" 120

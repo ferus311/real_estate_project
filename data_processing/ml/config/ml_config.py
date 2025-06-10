@@ -76,20 +76,6 @@ class ModelConfig:
         }
     )
 
-    # CatBoost parameters
-    catboost_params: Dict[str, Any] = field(
-        default_factory=lambda: {
-            "iterations": 1000,
-            "depth": 8,
-            "learning_rate": 0.05,
-            "random_state": 42,
-            "thread_count": -1,
-            "early_stopping_rounds": 50,
-            "eval_metric": "RMSE",
-            "verbose": False,
-        }
-    )
-
     # Neural Network parameters
     neural_net_params: Dict[str, Any] = field(
         default_factory=lambda: {

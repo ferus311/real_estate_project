@@ -200,17 +200,6 @@ def run_ml_pipeline(
 
             property_success = True
 
-            # Validate Gold data exists (unless skipped)
-            if validate_gold:
-                if not validate_gold_data_exists(
-                    spark, input_date, property_type, logger
-                ):
-                    logger.log_error(
-                        f"❌ Cannot proceed without Gold data for {property_type}"
-                    )
-                    property_success = False
-                    continue
-
             # Stage 1: Data Preparation (Gold → Cleaned Data + Feature Engineering)
             if "data_preparation" in stages_to_run:
                 preparation_success = run_data_preparation_stage(
@@ -297,13 +286,6 @@ def parse_args():
         "--skip-training", action="store_true", help="Skip model training stage"
     )
 
-    # Validation arguments
-    parser.add_argument(
-        "--no-validate-gold",
-        action="store_true",
-        help="Skip validation of Gold data existence (advanced users only)",
-    )
-
     return parser.parse_args()
 
 
@@ -323,7 +305,6 @@ if __name__ == "__main__":
             training_only=args.training_only,
             skip_features=args.skip_features,
             skip_training=args.skip_training,
-            validate_gold=not args.no_validate_gold,
         )
 
         if success:

@@ -26,14 +26,12 @@ dag = DAG(
     tags=["data_processing", "realestate"],
 )
 
-property_types = "{{ dag_run.conf.get('property_types', 'house') }}"
-date_param = "{{ ds }}"  # Airflow execution date
 
 # Chạy xử lý đầy đủ (Raw → Bronze → Silver → Gold)
 run_processing = DockerOperator(
     task_id="run_full_processing",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py --property-types {property_types}",
+    command=f"python /app/pipelines/daily_processing.py --date 2025-05-25 --skip-load",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,
@@ -46,5 +44,6 @@ run_processing = DockerOperator(
     docker_url="unix://var/run/docker.sock",
     dag=dag,
 )
-# Định nghĩa luồng công việc: ETL → Feature Engineering → ML Training
+
+
 run_processing

@@ -65,11 +65,11 @@ class MLDataPreprocessor:
             "feature_selection_k": 50,  # Top K features to select
             "lookback_days": 30,  # Days to include for training data
             # Price validation ranges (based on actual data analysis - in VND)
-            "price_min": 50000000,  # 50M VND - minimum reasonable price
-            "price_max": 100000000000,  # 500B VND - maximum reasonable price
+            "price_min": 500000000,  # 500M VND - minimum reasonable price
+            "price_max": 100000000000,  # 100B VND - maximum reasonable price
             # Area validation ranges (sqm)
-            "area_min": 5,  # 5 sqm - small units
-            "area_max": 50000,  # 50,000 sqm - very large properties
+            "area_min": 10,  # 10 sqm - small units
+            "area_max": 1000,  # 1000 sqm - very large properties
         }
 
         logger.info("🔄 ML Data Preparation Orchestrator initialized")

@@ -19,7 +19,6 @@ x-spark-common: &spark-common
         - ../../data_processing/spark/common:/opt/bitnami/spark/common
         - ../../data_processing/spark/pipelines:/opt/bitnami/spark/pipelines
 
-
 services:
     spark-master:
         <<: *spark-common
@@ -33,23 +32,13 @@ services:
 
     spark-worker-1:
         <<: *spark-common
-        container_name: spark-worker1
+        container_name: spark-worker-1
         environment:
             - SPARK_MODE=worker
             - SPARK_MASTER_URL=spark://spark-master:7077
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
         depends_on:
             - spark-master
-
-    # spark-worker-2:
-    #     <<: *spark-common
-    #     container_name: spark-worker2
-    #     environment:
-    #         - SPARK_MODE=worker
-    #         - SPARK_MASTER_URL=spark://spark-master:7077
-    #         - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    #     depends_on:
-    #         - spark-master
 
     jupyter:
         build:
@@ -66,7 +55,7 @@ services:
 
     spark-processor:
         build:
-            context: ../../data_processing/spark
+            context: ../../data_processing/
             dockerfile: Dockerfile
         container_name: spark-processor
         image: spark-processor:latest
@@ -76,8 +65,6 @@ services:
         environment:
             - SPARK_MASTER_URL=spark://spark-master:7077
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-            - SPARK_DRIVER_MEMORY=2g
-            - SPARK_EXECUTOR_MEMORY=2g
         volumes:
             - ../../data_processing/spark/jobs:/app/jobs
             - ../../data_processing/spark/common:/app/common

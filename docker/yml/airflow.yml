@@ -8,6 +8,14 @@ x-airflow-common: &airflow-common
         AIRFLOW__CORE__FERNET_KEY: ''
         AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
         AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    deploy:
+        resources:
+            limits:
+                memory: 8G
+                cpus: '4.0'
+            reservations:
+                memory: 4G
+                cpus: '2.0'
     volumes:
         - ../../data_processing/airflow/dags:/opt/airflow/dags
         - ../../data_processing/airflow/logs:/opt/airflow/logs
@@ -16,11 +24,10 @@ x-airflow-common: &airflow-common
         - ../../data_processing:/opt/airflow/data_processing
         - /var/run/docker.sock:/var/run/docker.sock
     # user: "${AIRFLOW_UID:-50000}:0"
-    user: "0:0"
+    user: '0:0'
     networks:
         - hdfs_network
         - airflow_network
-
 
 services:
     postgres:
@@ -81,4 +88,3 @@ networks:
     airflow_network:
         # driver: bridge
         name: airflow_network
-

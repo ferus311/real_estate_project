@@ -60,17 +60,17 @@ def create_optimized_ml_spark_session(
 
     # Cấu hình tối ưu đơn giản cho ML workloads
     ml_optimized_config = {
-        # Memory Management
-        "spark.driver.memory": "3g",
+        # Memory Management - Increased for better performance
+        # "spark.driver.memory": "4g",
         "spark.executor.memory": "6g",
-        "spark.executor.cores": "3",
-        "spark.driver.maxResultSize": "2g",
+        # "spark.executor.cores": "3",
+        # "spark.driver.maxResultSize": "3g",
         # Adaptive Query Execution (AQE)
         "spark.sql.adaptive.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         # Arrow Optimization for Pandas Conversion
         "spark.sql.execution.arrow.pyspark.enabled": "true",
-        "spark.sql.execution.arrow.maxRecordsPerBatch": "10000",
+        # "spark.sql.execution.arrow.maxRecordsPerBatch": "50000",
         # Shuffle Optimization
         "spark.sql.shuffle.partitions": "50",
         # Python Optimization

@@ -128,9 +128,56 @@ class RealEstateModelLoader:
         return PipelineModel.load(spark_model_path)
 
     def _load_sklearn_model(self, model_path: str, model_name: str) -> Any:
-        """Load sklearn model"""
-        sklearn_model_path = f"{model_path}/advanced_models/{model_name}_model.pkl"
-        return joblib.load(sklearn_model_path)
+        """Load sklearn model from HDFS or local filesystem"""
+        sklearn_model_path = f"{model_path}/sklearn_models/{model_name}_model.pkl"
+
+        # For HDFS paths, copy to local temp first, then load
+        if model_path.startswith("/data/"):
+            try:
+                # Copy from HDFS to local temp file
+                import tempfile
+
+                local_temp_dir = tempfile.mkdtemp(prefix=f"load_sklearn_{model_name}_")
+                local_model_file = f"{local_temp_dir}/{model_name}_model.pkl"
+
+                # Use Hadoop filesystem to copy from HDFS to local
+                if self.spark:
+                    hadoop_config = self.spark.sparkContext._jsc.hadoopConfiguration()
+                    hadoop_fs = self.spark.sparkContext._jvm.org.apache.hadoop.fs.FileSystem.get(
+                        hadoop_config
+                    )
+
+                    hdfs_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                        sklearn_model_path
+                    )
+                    local_path = self.spark.sparkContext._jvm.org.apache.hadoop.fs.Path(
+                        f"file://{local_model_file}"
+                    )
+
+                    # Copy from HDFS to local
+                    hadoop_fs.copyToLocalFile(hdfs_path, local_path)
+
+                    # Load using joblib
+                    model = joblib.load(local_model_file)
+
+                    # Clean up temp file
+                    import os
+
+                    os.remove(local_model_file)
+                    os.rmdir(local_temp_dir)
+
+                    return model
+                else:
+                    raise RuntimeError(
+                        "Spark session required for loading models from HDFS"
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to load sklearn model from HDFS: {e}")
+                raise
+        else:
+            # For local paths, load directly
+            return joblib.load(sklearn_model_path)
 
     def load_preprocessing_pipeline(self, model_path: str) -> PipelineModel:
         """

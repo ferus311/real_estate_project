@@ -22,7 +22,7 @@ ENV SPARK_LOG_DIR=/app/logs
 ENV SPARK_CONF_DIR=/opt/bitnami/spark/conf
 
 # Sao chép mã nguồn Spark processing
-# COPY ./spark/common /app/common
-# COPY ./spark/jobs /app/jobs
-# COPY ./spark/pipelines /app/pipelines
-# COPY ./ml /app/ml
+COPY ./spark/common /app/common
+COPY ./spark/jobs /app/jobs
+COPY ./spark/pipelines /app/pipelines
+COPY ./ml /app/ml
