@@ -1,0 +1,44 @@
+:root {
+  --primary-color: #2c6bed;
+  --primary-hover: #1c56d9;
+  --secondary-color: #6c63ff;
+  --accent-color: #00c7b1;
+  --text-primary: #2d3748;
+  --text-secondary: #4a5568;
+  --text-light: #718096;
+  --bg-light: #f8fafc;
+  --bg-dark: #1a202c;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 25px rgba(0, 0, 0, 0.1), 0 5px 10px rgba(0, 0, 0, 0.05);
+  --gradient-blue: linear-gradient(135deg, #2c6bed, #1e88e5);
+  --gradient-purple: linear-gradient(135deg, #6c63ff, #5a49f8);
+  --gradient-green: linear-gradient(135deg, #00c7b1, #00a896);
+  --border-radius: 10px;
+  --gradient-primary: linear-gradient(135deg, #2c6bed, #1e88e5);
+  --gradient-secondary: linear-gradient(135deg, #f0f5ff, #e6f7ff);
+}
+
+/* Apply custom styles to Ant Design components */
+.ant-btn-primary {
+  background: var(--gradient-primary);
+  border: none;
+}
+
+.ant-form-item-label
+  > label.ant-form-item-required:not(
+    .ant-form-item-required-mark-optional
+  )::before {
+  color: var(--primary-color);
+}
+
+.ant-input,
+.ant-input-number,
+.ant-select:not(.ant-select-customize-input) .ant-select-selector {
+  transition: all 0.3s;
+}
+
+.ant-card {
+  border-radius: var(--border-radius);
+  overflow: hidden;
+}

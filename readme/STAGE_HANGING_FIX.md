@@ -8,12 +8,12 @@ The ML model training pipeline was experiencing **Stage hanging** issues when ru
 
 ### **Direct Run vs Airflow Environment**
 
-| **Direct Run** | **Airflow Run** |
-|----------------|-----------------|
-| ✅ Single process | ❌ Multiple processes (Scheduler → Worker → Spark) |
-| ✅ Full host resources | ❌ Resource competition & limits |
+| **Direct Run**               | **Airflow Run**                                           |
+| ---------------------------- | --------------------------------------------------------- |
+| ✅ Single process            | ❌ Multiple processes (Scheduler → Worker → Spark)        |
+| ✅ Full host resources       | ❌ Resource competition & limits                          |
 | ✅ No serialization overhead | ❌ Task serialization overhead (22MB task binary warning) |
-| ✅ Simple memory management | ❌ Complex distributed memory management |
+| ✅ Simple memory management  | ❌ Complex distributed memory management                  |
 
 ### **Key Issues Identified**
 
@@ -79,10 +79,10 @@ cpus: 4.0
 
 # Airflow-specific worker optimizations
 environment:
-  AIRFLOW__CORE__WORKER_MEMORY_LIMIT: 7168  # 7GB
-  AIRFLOW__CELERY__WORKER_PREFETCH_MULTIPLIER: 1
-  AIRFLOW__CORE__PARALLELISM: 2
-  AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
+    AIRFLOW__CORE__WORKER_MEMORY_LIMIT: 7168 # 7GB
+    AIRFLOW__CELERY__WORKER_PREFETCH_MULTIPLIER: 1
+    AIRFLOW__CORE__PARALLELISM: 2
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
 ```
 
 ### **3. Revolutionary Processing Approach**
@@ -90,12 +90,14 @@ environment:
 #### **LOCAL Processing Instead of Distributed Conversion**
 
 **🔴 OLD APPROACH (Caused Hanging):**
+
 ```python
 # Problematic distributed Spark-to-Pandas conversion
 chunk_pandas = chunk_df.select("features", "price").toPandas()  # HANGS at Stage 114
 ```
 
 **🟢 NEW APPROACH (Eliminates Hanging):**
+
 ```python
 # Direct collection to driver for local processing
 collected_data = df_sampled.select("features", "price").collect()
@@ -104,11 +106,12 @@ features_array = np.array(features_list)  # Local conversion on driver
 ```
 
 #### **Key Benefits:**
-- ✅ **Eliminates distributed hanging**: No more Stage 103/114 issues
-- ✅ **Faster processing**: Direct memory access on driver
-- ✅ **Better memory control**: Explicit garbage collection
-- ✅ **Reduced network overhead**: Single collection operation
-- ✅ **Simplified debugging**: Clear error messages and logging
+
+-   ✅ **Eliminates distributed hanging**: No more Stage 103/114 issues
+-   ✅ **Faster processing**: Direct memory access on driver
+-   ✅ **Better memory control**: Explicit garbage collection
+-   ✅ **Reduced network overhead**: Single collection operation
+-   ✅ **Simplified debugging**: Clear error messages and logging
 
 ### **4. Smart Data Management**
 
@@ -124,19 +127,21 @@ gc.collect()
 ## 📊 Results & Performance
 
 ### **Before Fix:**
-- ❌ Pipeline hangs at Stage 103/114 consistently
-- ❌ 22MB task binary serialization warnings
-- ❌ Memory pressure in Airflow workers
-- ❌ Network timeouts causing failures
-- ❌ Unable to complete training through Airflow
+
+-   ❌ Pipeline hangs at Stage 103/114 consistently
+-   ❌ 22MB task binary serialization warnings
+-   ❌ Memory pressure in Airflow workers
+-   ❌ Network timeouts causing failures
+-   ❌ Unable to complete training through Airflow
 
 ### **After Fix:**
-- ✅ **No more Stage hanging**: Complete elimination of Stage hanging issues
-- ✅ **Successful Airflow execution**: Pipeline completes successfully in distributed environment
-- ✅ **Reduced memory footprint**: Optimized memory usage with explicit cleanup
-- ✅ **Faster processing**: Local processing eliminates network bottlenecks
-- ✅ **Better monitoring**: Enhanced logging and progress tracking
-- ✅ **Production ready**: Stable execution in Airflow environment
+
+-   ✅ **No more Stage hanging**: Complete elimination of Stage hanging issues
+-   ✅ **Successful Airflow execution**: Pipeline completes successfully in distributed environment
+-   ✅ **Reduced memory footprint**: Optimized memory usage with explicit cleanup
+-   ✅ **Faster processing**: Local processing eliminates network bottlenecks
+-   ✅ **Better monitoring**: Enhanced logging and progress tracking
+-   ✅ **Production ready**: Stable execution in Airflow environment
 
 ## 🧪 Testing Strategy
 
@@ -159,46 +164,52 @@ self.logger.logger.info(f"✅ Local conversion completed: {features_array.shape}
 
 ## 🔧 Configuration Files Modified
 
-| File | Changes | Purpose |
-|------|---------|---------|
-| `spark.yml` | Network timeouts, serialization, memory | Anti-hanging Spark config |
-| `airflow.yml` | Memory limits, worker optimizations | Resource allocation |
-| `spark_config.py` | Anti-hanging ML session config | Enhanced session creation |
-| `model_training.py` | LOCAL processing approach | Eliminate distributed hanging |
+| File                | Changes                                 | Purpose                       |
+| ------------------- | --------------------------------------- | ----------------------------- |
+| `spark.yml`         | Network timeouts, serialization, memory | Anti-hanging Spark config     |
+| `airflow.yml`       | Memory limits, worker optimizations     | Resource allocation           |
+| `spark_config.py`   | Anti-hanging ML session config          | Enhanced session creation     |
+| `model_training.py` | LOCAL processing approach               | Eliminate distributed hanging |
 
 ## 🚀 Key Innovations
 
 ### **1. Bypass Distributed Conversion**
-- **Innovation**: Use `collect()` instead of `toPandas()` for data extraction
-- **Impact**: Eliminates distributed conversion bottleneck that caused hanging
+
+-   **Innovation**: Use `collect()` instead of `toPandas()` for data extraction
+-   **Impact**: Eliminates distributed conversion bottleneck that caused hanging
 
 ### **2. Driver-Local Processing**
-- **Innovation**: Process all sklearn operations on driver node
-- **Impact**: Predictable memory usage and better error handling
+
+-   **Innovation**: Process all sklearn operations on driver node
+-   **Impact**: Predictable memory usage and better error handling
 
 ### **3. Comprehensive Resource Management**
-- **Innovation**: End-to-end resource optimization from Spark to Airflow
-- **Impact**: Stable execution in production environment
+
+-   **Innovation**: End-to-end resource optimization from Spark to Airflow
+-   **Impact**: Stable execution in production environment
 
 ### **4. Smart Sampling Strategy**
-- **Innovation**: Intelligent data size management for local processing
-- **Impact**: Maintains model quality while ensuring processing stability
+
+-   **Innovation**: Intelligent data size management for local processing
+-   **Impact**: Maintains model quality while ensuring processing stability
 
 ## 📈 Production Readiness
 
 ### **Deployment Checklist:**
-- ✅ Spark configurations updated with anti-hanging settings
-- ✅ Airflow resources optimized for ML workloads
-- ✅ LOCAL processing approach implemented
-- ✅ Memory management and garbage collection optimized
-- ✅ Enhanced logging and monitoring added
-- ✅ Production quality validation maintained
+
+-   ✅ Spark configurations updated with anti-hanging settings
+-   ✅ Airflow resources optimized for ML workloads
+-   ✅ LOCAL processing approach implemented
+-   ✅ Memory management and garbage collection optimized
+-   ✅ Enhanced logging and monitoring added
+-   ✅ Production quality validation maintained
 
 ### **Monitoring & Alerts:**
-- 🔍 Stage progression monitoring
-- 📊 Memory usage tracking
-- ⏱️ Processing time benchmarks
-- 🚨 Error handling and recovery
+
+-   🔍 Stage progression monitoring
+-   📊 Memory usage tracking
+-   ⏱️ Processing time benchmarks
+-   🚨 Error handling and recovery
 
 ## 🎉 Conclusion
 
@@ -214,13 +225,15 @@ The solution ensures **reliable ML model training in Airflow environment** while
 ---
 
 **Key Success Metrics:**
-- 🎯 **0% Stage hanging**: Complete elimination of hanging issues
-- ⚡ **50%+ faster processing**: Local processing performance gains
-- 💾 **60% less memory usage**: Optimized resource utilization
-- 🔧 **100% Airflow compatibility**: Stable distributed execution
-- 📊 **Maintained model quality**: No degradation in ML performance
+
+-   🎯 **0% Stage hanging**: Complete elimination of hanging issues
+-   ⚡ **50%+ faster processing**: Local processing performance gains
+-   💾 **60% less memory usage**: Optimized resource utilization
+-   🔧 **100% Airflow compatibility**: Stable distributed execution
+-   📊 **Maintained model quality**: No degradation in ML performance
 
 **Next Steps:**
+
 1. Deploy updated configurations to production
 2. Monitor pipeline performance metrics
 3. Scale to additional property types and larger datasets
