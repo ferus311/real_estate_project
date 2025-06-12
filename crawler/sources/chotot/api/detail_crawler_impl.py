@@ -7,7 +7,7 @@ from datetime import datetime
 import os
 
 from common.base.base_detail_crawler import BaseDetailCrawler
-from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from common.utils.checkpoint import get_checkpoint_manager
 from common.models.house_detail import HouseDetailItem
 
 
@@ -19,11 +19,11 @@ class ChototDetailCrawler(BaseDetailCrawler):
 
     def __init__(self, max_concurrent: int = 10):
         super().__init__(source="chotot", max_concurrent=max_concurrent)
+
+        # Khởi tạo checkpoint manager
+        self.checkpoint_mgr = get_checkpoint_manager("chotot_detail")
         self.detail_api_url = "https://gateway.chotot.com/v1/public/ad-listing"
         self.max_retries = 3
-
-        # Đảm bảo thư mục checkpoint tồn tại
-        os.makedirs(os.path.dirname(self.checkpoint_file), exist_ok=True)
 
         # Cập nhật headers đặc thù cho Chotot
         self.headers = {
@@ -280,8 +280,7 @@ class ChototDetailCrawler(BaseDetailCrawler):
 
             # Kiểm tra checkpoint để tránh crawl lại
             if listing_id:
-                checkpoint = load_checkpoint(self.checkpoint_file)
-                if checkpoint and listing_id in checkpoint and checkpoint[listing_id]:
+                if self.checkpoint_mgr.is_crawled(listing_id):
                     print(f"[Chotot Detail] Post {listing_id} already crawled")
                     return {"skipped": True, "url": url}
 
@@ -301,8 +300,8 @@ class ChototDetailCrawler(BaseDetailCrawler):
 
                             # Lưu checkpoint nếu thành công
                             if listing_id:
-                                save_checkpoint(
-                                    self.checkpoint_file, listing_id, success=True
+                                self.checkpoint_mgr.save_checkpoint(
+                                    listing_id, success=True
                                 )
 
                             return result
@@ -317,7 +316,7 @@ class ChototDetailCrawler(BaseDetailCrawler):
 
             # Đánh dấu thất bại trong checkpoint
             if listing_id:
-                save_checkpoint(self.checkpoint_file, listing_id, success=False)
+                self.checkpoint_mgr.save_checkpoint(listing_id, success=False)
 
             return None
 

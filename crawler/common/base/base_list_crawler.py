@@ -4,7 +4,6 @@ import asyncio
 import random
 from datetime import datetime
 
-from ..utils.checkpoint import should_force_crawl
 
 
 class BaseListCrawler(ABC):
@@ -16,7 +15,6 @@ class BaseListCrawler(ABC):
         self.source = source
         self.max_concurrent = max_concurrent
         self.running = True
-        self.checkpoint_file = f"./checkpoint/{source}_list_checkpoint.json"
 
         # Force crawl options
         self.force_crawl = False
@@ -27,7 +25,6 @@ class BaseListCrawler(ABC):
         self,
         force_crawl: bool = False,
         force_crawl_interval: float = 24.0,
-        checkpoint_file: str = None,
     ):
         """
         Thiết lập các tùy chọn force crawl
@@ -35,12 +32,9 @@ class BaseListCrawler(ABC):
         Args:
             force_crawl: Có bật chế độ force crawl hay không
             force_crawl_interval: Khoảng thời gian (giờ) sau đó cần crawl lại
-            checkpoint_file: Đường dẫn đến file checkpoint
         """
         self.force_crawl = force_crawl
         self.force_crawl_interval = force_crawl_interval
-        if checkpoint_file:
-            self.checkpoint_file = checkpoint_file
 
     def set_should_crawl_page_callback(
         self, callback: Callable[[int], Awaitable[bool]]

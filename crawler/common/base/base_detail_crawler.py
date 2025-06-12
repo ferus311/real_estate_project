@@ -17,13 +17,6 @@ class BaseDetailCrawler(ABC):
         self.max_concurrent = max_concurrent
         self.running = True
 
-        # Đảm bảo thư mục checkpoint tồn tại
-        checkpoint_dir = os.environ.get("CHECKPOINT_DIR", "./checkpoint")
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        self.checkpoint_file = os.path.join(
-            checkpoint_dir, f"{source}_detail_checkpoint.json"
-        )
-
     @abstractmethod
     async def crawl_detail(self, url: str) -> Dict[str, Any]:
         """

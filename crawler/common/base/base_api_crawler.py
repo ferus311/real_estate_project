@@ -18,7 +18,6 @@ class BaseApiCrawler(ABC):
         self.source = source
         self.max_concurrent = max_concurrent
         self.running = True
-        self.checkpoint_file = f"./checkpoint/{source}_api_checkpoint.json"
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
             "Accept": "application/json",

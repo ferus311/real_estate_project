@@ -7,7 +7,7 @@ from playwright.async_api import async_playwright
 from playwright._impl._errors import TargetClosedError
 
 from common.base.base_detail_crawler import BaseDetailCrawler
-from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from common.utils.checkpoint import get_checkpoint_manager
 from sources.batdongsan.playwright.extractors import extract_detail_info
 
 
@@ -18,6 +18,10 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
 
     def __init__(self, max_concurrent: int = 5):
         super().__init__(source="batdongsan", max_concurrent=max_concurrent)
+
+        # Khởi tạo checkpoint manager
+        self.checkpoint_mgr = get_checkpoint_manager("batdongsan_detail")
+
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
@@ -37,8 +41,6 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
             return post_id
         except Exception:
             return None
-
-
 
     async def crawl_detail(self, url: str) -> Optional[Dict[str, Any]]:
         """Crawl chi tiết một tin đăng bất động sản từ URL"""
@@ -62,11 +64,9 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
 
         # Kiểm tra checkpoint nếu có post_id
         if post_id:
-            checkpoint = load_checkpoint(self.checkpoint_file)
-            if post_id in checkpoint and checkpoint[post_id]:
+            if self.checkpoint_mgr.is_crawled(post_id):
                 print(f"[Batdongsan Detail] Post {post_id} already crawled")
                 return {"skipped": True, "url": url}
-
 
         while retries > 0:
             browser = None
@@ -139,7 +139,7 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
 
                     # Lưu checkpoint nếu có post_id
                     if post_id:
-                        save_checkpoint(self.checkpoint_file, post_id, success=True)
+                        self.checkpoint_mgr.save_checkpoint(post_id, success=True)
 
                     # Chuyển đối tượng thành dictionary
                     detail_dict = (
@@ -175,7 +175,7 @@ class BatdongsanDetailCrawler(BaseDetailCrawler):
 
         # Đánh dấu thất bại trong checkpoint
         if post_id:
-            save_checkpoint(self.checkpoint_file, post_id, success=False)
+            self.checkpoint_mgr.save_checkpoint(post_id, success=False)
 
         return None
 

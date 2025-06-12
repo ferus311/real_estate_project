@@ -11,7 +11,7 @@ import html
 
 from common.base.base_api_crawler import BaseApiCrawler
 from common.models.house_detail import HouseDetailItem
-from common.utils.checkpoint import load_checkpoint, save_checkpoint
+from common.utils.checkpoint import get_checkpoint_manager
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +25,9 @@ class ChototApiCrawler(BaseApiCrawler):
         super().__init__(source="chotot", max_concurrent=max_concurrent)
         self.api_base_url = "https://gateway.chotot.com/v1/public/ad-listing"
         self.max_retries = 3
+
+        # Khởi tạo checkpoint manager - Hiệu quả hơn!
+        self.checkpoint_mgr = get_checkpoint_manager("chotot_api")
 
         # Cập nhật headers đặc thù cho Chotot
         self.headers = {
@@ -273,12 +276,7 @@ class ChototApiCrawler(BaseApiCrawler):
                         listing_id = str(ad_data.get("list_id", ""))
 
                         # Kiểm tra checkpoint để tránh crawl lại
-                        checkpoint = load_checkpoint(self.checkpoint_file)
-                        if (
-                            checkpoint
-                            and listing_id in checkpoint
-                            and checkpoint[listing_id]
-                        ):
+                        if self.checkpoint_mgr.is_crawled(listing_id):
                             logger.info(
                                 f"[Chotot] Post {listing_id} already crawled, skipping"
                             )
@@ -288,7 +286,7 @@ class ChototApiCrawler(BaseApiCrawler):
                         result = self._parse_ad_data(ad_data)
 
                         # Lưu checkpoint
-                        save_checkpoint(self.checkpoint_file, listing_id, success=True)
+                        self.checkpoint_mgr.save_checkpoint(listing_id, success=True)
 
                         # Gọi callback
                         if callback:

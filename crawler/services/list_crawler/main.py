@@ -19,7 +19,6 @@ from common.utils.logging_utils import setup_logging
 from common.base.base_service import BaseService
 from common.base.base_list_crawler import BaseListCrawler
 from common.factory.crawler_factory import CrawlerFactory
-from common.utils.checkpoint import save_checkpoint_with_timestamp, should_force_crawl
 
 
 load_dotenv()
@@ -93,12 +92,6 @@ class ListCrawlerService(BaseService):
                 else:
                     self.producer.send("property-urls", message)
 
-            # Lưu checkpoint với timestamp khi hoàn thành một trang
-            if page_number is not None:
-                save_checkpoint_with_timestamp(
-                    self.checkpoint_file, page_number, success=True
-                )
-
         try:
             crawler = self.get_crawler()
 
@@ -107,14 +100,14 @@ class ListCrawlerService(BaseService):
                 crawler.set_force_crawl_options(
                     force_crawl=self.force_crawl,
                     force_crawl_interval=self.force_crawl_interval,
-                    checkpoint_file=self.checkpoint_file,
                 )
 
             async def should_crawl_page(page_number):
                 if not self.force_crawl:
                     return True
-                return should_force_crawl(
-                    self.checkpoint_file, page_number, self.force_crawl_interval
+                # Sử dụng checkpoint manager của crawler
+                return crawler.checkpoint_mgr.should_force_crawl(
+                    str(page_number), self.force_crawl_interval
                 )
 
             # Thiết lập hàm kiểm tra nếu crawler hỗ trợ

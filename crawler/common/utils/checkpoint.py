@@ -1,104 +1,154 @@
 import os
-import json
 import time
+import sqlite3
 from datetime import datetime
+from typing import Dict, Any, Optional
+import threading
+from contextlib import contextmanager
 
 
-def save_checkpoint(file_path, page_number, success=True):
-    # Tạo thư mục nếu chưa tồn tại
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+class CheckpointManager:
+    """
+    SQLite checkpoint manager - Đơn giản và hiệu quả
+    """
 
-    data = load_checkpoint(file_path)
-    data[str(page_number)] = success
+    _instances = {}
+    _lock = threading.Lock()
 
-    # Ghi dữ liệu vào file (tạo mới nếu chưa có)
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=2)
+    def __new__(cls, source: str, base_path: str = "/app/checkpoint"):
+        with cls._lock:
+            key = f"{source}_{base_path}"
+            if key not in cls._instances:
+                instance = super().__new__(cls)
+                cls._instances[key] = instance
+            return cls._instances[key]
 
+    def __init__(self, source: str, base_path: str = "/app/checkpoint"):
+        if hasattr(self, "_initialized"):
+            return
 
-def save_checkpoint_with_timestamp(file_path, page_number, success=True):
-    """Lưu checkpoint với timestamp để hỗ trợ force crawl"""
-    # Tạo thư mục nếu chưa tồn tại
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        self.source = source
+        self.base_path = base_path
+        os.makedirs(base_path, exist_ok=True)
 
-    data = load_checkpoint(file_path)
-    data[str(page_number)] = {
-        "success": success,
-        "timestamp": time.time(),
-        "datetime": datetime.now().isoformat(),
-    }
+        self.db_path = os.path.join(base_path, f"{source}_checkpoint.db")
+        self._local = threading.local()
+        self._initialized = True
 
-    # Ghi dữ liệu vào file (tạo mới nếu chưa có)
-    with open(file_path, "w") as f:
-        json.dump(data, f, indent=2)
+        self._init_database()
 
+    def _init_database(self):
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    identifier TEXT PRIMARY KEY,
+                    success BOOLEAN NOT NULL DEFAULT 1,
+                    timestamp REAL NOT NULL,
+                    datetime TEXT NOT NULL
+                )
+            """
+            )
 
-def load_checkpoint(file_path):
-    if os.path.exists(file_path):
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_timestamp
+                ON checkpoints(timestamp)
+            """
+            )
+
+    @contextmanager
+    def _get_connection(self):
+        if not hasattr(self._local, "connection"):
+            self._local.connection = sqlite3.connect(
+                self.db_path, timeout=30.0, check_same_thread=False
+            )
+            # Simple optimizations
+            self._local.connection.execute("PRAGMA journal_mode=WAL")
+            self._local.connection.execute("PRAGMA synchronous=NORMAL")
+
         try:
-            with open(file_path, "r") as f:
-                content = f.read().strip()
-                if not content:
-                    # File rỗng -> trả về dict rỗng
-                    return {}
-                return json.loads(content)
-        except (json.JSONDecodeError, ValueError):
-            # File không phải JSON hợp lệ -> trả về dict rỗng
-            return {}
-    return {}
+            yield self._local.connection
+        finally:
+            self._local.connection.commit()
+
+    def save_checkpoint(self, identifier: str, success: bool = True):
+        """Lưu checkpoint"""
+        current_time = time.time()
+        current_datetime = datetime.now().isoformat()
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO checkpoints
+                (identifier, success, timestamp, datetime)
+                VALUES (?, ?, ?, ?)
+            """,
+                (str(identifier), success, current_time, current_datetime),
+            )
+
+    def is_crawled(self, identifier: str) -> bool:
+        """Kiểm tra xem item đã được crawl thành công chưa"""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT 1 FROM checkpoints
+                WHERE identifier = ? AND success = 1
+                LIMIT 1
+            """,
+                (str(identifier),),
+            )
+
+            return cursor.fetchone() is not None
+
+    def should_force_crawl(
+        self, identifier: str, force_crawl_interval_hours: float
+    ) -> bool:
+        """Kiểm tra có nên force crawl không"""
+        if force_crawl_interval_hours <= 0:
+            return False
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT timestamp FROM checkpoints
+                WHERE identifier = ? AND success = 1
+                LIMIT 1
+            """,
+                (str(identifier),),
+            )
+
+            row = cursor.fetchone()
+            if not row:
+                return True
+
+            last_crawl_time = row[0]
+            current_time = time.time()
+            hours_since_last_crawl = (current_time - last_crawl_time) / 3600
+
+            return hours_since_last_crawl >= force_crawl_interval_hours
+
+    def get_stats(self) -> Dict[str, int]:
+        """Thống kê checkpoint"""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed_count
+                FROM checkpoints
+            """
+            )
+
+            row = cursor.fetchone()
+            return {
+                "total": row[0] if row else 0,
+                "success": row[1] if row else 0,
+                "failed": row[2] if row else 0,
+            }
 
 
-def should_force_crawl(file_path, page_number, force_crawl_interval_hours):
-    """
-    Kiểm tra xem có nên force crawl trang này không dựa trên khoảng thời gian đã cấu hình
-
-    Args:
-        file_path: Đường dẫn đến file checkpoint
-        page_number: Số trang cần kiểm tra
-        force_crawl_interval_hours: Số giờ sau đó cần crawl lại
-
-    Returns:
-        bool: True nếu trang cần được crawl lại, False nếu không
-    """
-    if force_crawl_interval_hours <= 0:
-        return False
-
-    data = load_checkpoint(file_path)
-    page_data = data.get(str(page_number))
-
-    # Nếu chưa crawl hoặc không có timestamp, cần crawl
-    if not page_data or not isinstance(page_data, dict) or "timestamp" not in page_data:
-        return True
-
-    # Tính khoảng thời gian đã trôi qua kể từ lần cuối crawl
-    last_crawl_time = page_data["timestamp"]
-    current_time = time.time()
-    hours_since_last_crawl = (current_time - last_crawl_time) / 3600
-
-    # Nếu đã quá thời gian force_crawl_interval_hours, cần crawl lại
-    return hours_since_last_crawl >= force_crawl_interval_hours
-
-
-def load_file_checkpoint(path):
-    # Tạo thư mục nếu chưa tồn tại
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    return load_checkpoint(path)
-
-
-def mark_file_done(filename, path):
-    # os.makedirs(os.path.dirname(path), exist_ok=True)
-    save_checkpoint(path, filename, success=True)
-
-
-def is_file_done(filename, checkpoint):
-    checkpoint_data = checkpoint.get(filename)
-    if not checkpoint_data:
-        return False
-
-    # Hỗ trợ cả định dạng legacy và mới (có timestamp)
-    if isinstance(checkpoint_data, bool):
-        return checkpoint_data
-    elif isinstance(checkpoint_data, dict):
-        return checkpoint_data.get("success", False)
-
-    return False
+def get_checkpoint_manager(source: str) -> CheckpointManager:
+    """Factory function để tạo CheckpointManager"""
+    return CheckpointManager(source)
