@@ -54,7 +54,7 @@ run_list_crawler = DockerOperator(
     },
     mount_tmp_dir=False,
     mounts=[
-        Mount(source="/crawler/checkpoint", target="/app/checkpoint", type="bind")
+        Mount(source="crawler_checkpoint", target="/app/checkpoint", type="volume")
     ],
     docker_url="unix://var/run/docker.sock",
     dag=dag,
@@ -86,7 +86,7 @@ run_detail_crawler = DockerOperator(
     },
     mount_tmp_dir=False,
     mounts=[
-        Mount(source="/crawler/checkpoint", target="/app/checkpoint", type="bind")
+        Mount(source="crawler_checkpoint", target="/app/checkpoint", type="volume")
     ],
     docker_url="unix://var/run/docker.sock",
     dag=dag,

@@ -49,7 +49,7 @@ def load_to_serving_layer(
     # Default PostgreSQL config
     if postgres_config is None:
         postgres_config = {
-            "url": "jdbc:postgresql://postgres:5432/realestate",
+            "url": "jdbc:postgresql://realestate-postgres:5432/realestate",
             "user": "postgres",
             "password": "password",
             "driver": "org.postgresql.Driver",
@@ -112,39 +112,33 @@ def extract_from_gold(spark: SparkSession, input_date: str, property_type: str, 
 def transform_for_serving(gold_df: DataFrame, logger):
     """Transform dữ liệu cho serving layer"""
 
-    # Select và transform fields cho web serving
+    # Debug: Kiểm tra schema của Gold layer
+    logger.logger.info("🔍 Gold layer schema:")
+    for field in gold_df.schema.fields:
+        logger.logger.info(f"  - {field.name}: {field.dataType}")
+
+    # Select và transform fields cho web serving - map từ Gold schema
     serving_df = gold_df.select(
         # Core property fields
         col("id").alias("property_id"),
         col("title"),
         col("price").cast("bigint"),
         col("area").cast("real"),
-        col("bedrooms").cast("int"),
-        col("bathrooms").cast("int"),
+        col("bedroom").cast("int").alias("bedrooms"),  # Map bedroom -> bedrooms
+        col("bathroom").cast("int").alias("bathrooms"),  # Map bathroom -> bathrooms
         col("description"),
         # Location fields
         col("province"),
         col("district"),
         col("ward"),
-        col("address"),
+        col("location").alias("address"),  # Map location -> address
         col("latitude").cast("double"),
         col("longitude").cast("double"),
         # Source fields
         col("source"),
         col("url"),
-        # Contact fields
-        col("contact_name"),
-        col("contact_phone"),
-        # Computed fields for serving (sẽ được optimize trong PostgreSQL)
-        when(col("area") > 0, col("price") / col("area"))
-        .otherwise(None)
-        .alias("price_per_m2"),
-        # Property type classification
-        when(col("price") < 1000000000, "budget")
-        .when(col("price") < 5000000000, "mid-range")
-        .otherwise("luxury")
-        .alias("price_tier"),
-        # Metadata
+        # Metadata - sử dụng processing_timestamp từ Gold nếu có
+        coalesce(col("processing_timestamp"), current_timestamp()).alias("created_at"),
         current_timestamp().alias("updated_at"),
         lit(datetime.now().strftime("%Y-%m-%d")).alias("processing_date"),
     ).filter(
@@ -163,8 +157,8 @@ def transform_for_serving(gold_df: DataFrame, logger):
 def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
     """Load dữ liệu vào PostgreSQL với upsert logic"""
 
-    # Write vào PostgreSQL
-    # Mode "append" với duplicate handling sẽ được handle bởi PostgreSQL constraints
+    # PostgreSQL có UNIQUE constraint trên (url, source), nên sẽ conflict khi có duplicate
+    # Cách 1: Thử append trước, nếu failed thì overwrite staging table
     try:
         serving_df.write.format("jdbc").option("url", postgres_config["url"]).option(
             "dbtable", "properties"
@@ -173,7 +167,7 @@ def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
         ).option(
             "driver", postgres_config["driver"]
         ).option(
-            "batchsize", "10000"
+            "batchsize", "5000"
         ).option(
             "numPartitions", "4"
         ).mode(
@@ -183,20 +177,34 @@ def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
         logger.logger.info("✅ Successfully loaded data to PostgreSQL")
 
     except Exception as e:
-        # Nếu append failed (có thể do duplicates), thử overwrite
-        logger.logger.warning(f"⚠️ Append failed, trying overwrite: {e}")
+        # Nếu append failed (có thể do duplicates), thử load vào staging table
+        logger.logger.warning(f"⚠️ Append failed, trying staging table approach: {e}")
 
-        serving_df.write.format("jdbc").option("url", postgres_config["url"]).option(
-            "dbtable", "properties_staging"
-        ).option("user", postgres_config["user"]).option(
-            "password", postgres_config["password"]
-        ).option(
-            "driver", postgres_config["driver"]
-        ).mode(
-            "overwrite"
-        ).save()
+        try:
+            # Load vào staging table với overwrite
+            serving_df.write.format("jdbc").option(
+                "url", postgres_config["url"]
+            ).option("dbtable", "properties_staging").option(
+                "user", postgres_config["user"]
+            ).option(
+                "password", postgres_config["password"]
+            ).option(
+                "driver", postgres_config["driver"]
+            ).option(
+                "batchsize", "5000"
+            ).option(
+                "numPartitions", "4"
+            ).mode(
+                "overwrite"
+            ).save()
 
-        logger.logger.info("✅ Successfully loaded data to PostgreSQL staging table")
+            logger.logger.info(
+                "✅ Successfully loaded data to PostgreSQL staging table"
+            )
+
+        except Exception as e2:
+            logger.logger.error(f"❌ Both append and staging failed: {e2}")
+            raise
 
 
 def parse_args():

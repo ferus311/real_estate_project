@@ -50,7 +50,7 @@ run_crawler = DockerOperator(
         "KAFKA_BOOTSTRAP_SERVERS": "kafka1:19092",
     },
     mount_tmp_dir=False,
-    mounts=[Mount(source="/crawler/checkpoint", target="/app/checkpoint", type="bind")],
+    mounts=[Mount(source="crawler_checkpoint", target="/app/checkpoint", type="volume")],
     docker_url="unix://var/run/docker.sock",
     dag=dag,
 )

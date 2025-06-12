@@ -14,7 +14,7 @@ default_args = {
 }
 
 dag = DAG(
-    "storage_service_hdfs_json_raw",
+    "hdfs_json_storage",
     default_args=default_args,
     description="DAG to run storage service to save raw data in JSON format to HDFS after crawler completes",
     schedule_interval=None,  # Can be set to '@daily' or other schedule if needed
@@ -24,7 +24,7 @@ dag = DAG(
 
 # Run storage service to process data from Kafka and save to HDFS in JSON format (for raw data)
 run_storage_service = DockerOperator(
-    task_id="run_storage_service_hdfs_json_raw",
+    task_id="run_hdfs_json_storage",
     image="realestate-crawler:latest",
     command="python -m services.storage_service.main --once",
     auto_remove=True,

@@ -30,10 +30,6 @@ CREATE TABLE IF NOT EXISTS properties (
     source VARCHAR(50) NOT NULL,
     url TEXT,
 
-    -- Contact information
-    contact_name VARCHAR(200),
-    contact_phone VARCHAR(20),
-
     -- Computed fields (calculated automatically)
     price_per_m2 REAL GENERATED ALWAYS AS (
         CASE

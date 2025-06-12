@@ -80,7 +80,7 @@ trigger_playwright_crawler = TriggerDagRunOperator(
 # Kích hoạt DAG storage để lưu trữ dữ liệu vào HDFS
 trigger_storage = TriggerDagRunOperator(
     task_id="trigger_storage_dag",
-    trigger_dag_id="storage_service_hdfs_json_raw",  # ID của DAG storage
+    trigger_dag_id="hdfs_json_storage",  # ID của DAG storage
     wait_for_completion=True,  # Đợi storage hoàn thành
     poke_interval=60,  # Kiểm tra mỗi 60 giây
     reset_dag_run=True,  # Reset nếu DAG đã tồn tại

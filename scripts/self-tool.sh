@@ -57,10 +57,9 @@ mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
 mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 
 
-sudo mkdir -p /crawler/checkpoint
 if ! grep -qs ${PROJECT_DIR}/docker/volumes/crawler/checkpoint /proc/mounts; then
     echo "Mounting..."
-    sudo mount --bind /crawler/checkpoint ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
+    sudo mount --bind /var/lib/docker/volumes/crawler_checkpoint/_data ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 else
     echo "Already mounted"
 fi
@@ -119,7 +118,9 @@ wait_for_service "Airflow webserver" "8080" "localhost" 180
 
 # Khởi động Spark
 echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
-docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master
+sleep 5
+docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-worker-1 spark-processor
 # docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1 spark-processor jupyter
 check_error "Không thể khởi động Spark"
 # Đợi Spark khởi động

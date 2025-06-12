@@ -35,24 +35,6 @@ ml_docker_env = {
 }
 
 
-# Chạy xử lý đầy đủ (Raw → Bronze → Silver → Gold)
-run_processing = DockerOperator(
-    task_id="run_processing",
-    image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py --skip-load",
-    network_mode="hdfs_network",
-    api_version="auto",
-    auto_remove=True,
-    mount_tmp_dir=False,
-    environment={
-        "SPARK_MASTER_URL": "spark://spark-master:7077",
-        "CORE_CONF_fs_defaultFS": "hdfs://namenode:9000",
-        "HDFS_NAMENODE_ADDRESS": "hdfs://namenode:9000",
-    },
-    docker_url="unix://var/run/docker.sock",
-    dag=dag,
-)
-
 # Step 1: Data Preparation (Gold → Cleaned Data + Feature Engineering)
 data_preparation_task = DockerOperator(
     task_id="data_preparation",
@@ -91,4 +73,4 @@ model_training_task = DockerOperator(
 
 
 # Define task dependencies
-(run_processing >> data_preparation_task >> model_training_task)
+(data_preparation_task >> model_training_task)
