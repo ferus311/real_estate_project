@@ -54,6 +54,7 @@ from common.utils.date_utils import (
 from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
+from common.utils.address_parser import add_address_parsing_to_dataframe
 
 
 # ===================== MAIN TRANSFORMATION FUNCTION =====================
@@ -261,7 +262,27 @@ def transform_chotot_data(
             ~col("has_invalid_unit")  # Filter out records with "nghìn" units
         ).drop("has_invalid_unit")
 
-        logger.log_dataframe_info(final_clean_df, "silver_data")
+        # ===================== ADDRESS PARSING =====================
+        logger.logger.info("Parsing addresses...")
+
+        # Parse addresses - Chotot có thể có sẵn street, ward, district, province
+        # json_path sẽ dùng default path trong address_parser.py
+        address_parsed_df = add_address_parsing_to_dataframe(
+            df=final_clean_df,
+            location_col="location",
+            existing_street_col=(
+                "street" if "street" in final_clean_df.columns else None
+            ),
+            existing_ward_col=("ward" if "ward" in final_clean_df.columns else None),
+            existing_district_col=(
+                "district" if "district" in final_clean_df.columns else None
+            ),
+            existing_province_col=(
+                "province" if "province" in final_clean_df.columns else None
+            ),
+        )
+
+        logger.log_dataframe_info(address_parsed_df, "silver_data")
 
         # Step 6: Write filtered data to silver (REMOVED RECORDS WITH INVALID UNITS)
         output_path = f"{silver_path}/chotot_{input_date.replace('-', '')}.parquet"
@@ -269,18 +290,18 @@ def transform_chotot_data(
         logger.logger.info(
             "🎯 WRITING FILTERED DATA TO SILVER LAYER (REMOVED RECORDS WITH INVALID UNITS)"
         )
-        final_clean_df.write.mode("overwrite").parquet(output_path)
+        address_parsed_df.write.mode("overwrite").parquet(output_path)
 
-        final_count = final_clean_df.count()
+        final_count = address_parsed_df.count()
         logger.logger.info(
             f"✅ Successfully processed {final_count:,} records to {output_path} (filtered out invalid units)"
         )
 
         # Uncache and finish
-        final_clean_df.unpersist()
+        address_parsed_df.unpersist()
 
         logger.end_job()
-        return final_clean_df
+        return address_parsed_df
 
     except Exception as e:
         logger.log_error("Error processing data", e)

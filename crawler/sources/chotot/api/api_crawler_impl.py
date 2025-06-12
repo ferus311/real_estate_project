@@ -207,6 +207,10 @@ class ChototApiCrawler(BaseApiCrawler):
             result["living_size"] = str(ad_data.get("living_size", ""))
             result["width"] = str(ad_data.get("width", ""))
             result["length"] = str(ad_data.get("length", ""))
+            result["street"] = str(ad_data.get("street_name", ""))
+            result["province"] = str(ad_data.get("region_name", ""))
+            result["district"] = str(ad_data.get("area_name", ""))
+            result["ward"] = str(ad_data.get("ward_name", ""))
             result["url"] = url
 
             return result

@@ -258,35 +258,8 @@ def unify_property_data(
             .otherwise(lit("UNKNOWN")),
         )
 
-        # Trích xuất địa chỉ thành các thành phần (cải thiện logic)
-        if "location" in unified_df.columns:
-            unified_df = (
-                unified_df.withColumn(
-                    "province",
-                    when(
-                        col("location").isNotNull() & (col("location") != ""),
-                        trim(element_at(split(col("location"), ","), -1)),
-                    ).otherwise(lit(None)),
-                )
-                .withColumn(
-                    "district",
-                    when(
-                        col("location").isNotNull()
-                        & (col("location") != "")
-                        & (size(split(col("location"), ",")) >= 2),
-                        trim(element_at(split(col("location"), ","), -2)),
-                    ).otherwise(lit(None)),
-                )
-                .withColumn(
-                    "ward",
-                    when(
-                        col("location").isNotNull()
-                        & (col("location") != "")
-                        & (size(split(col("location"), ",")) >= 3),
-                        trim(element_at(split(col("location"), ","), -3)),
-                    ).otherwise(lit(None)),
-                )
-            )
+        # ✅ ADDRESS PARSING ĐÃ ĐƯỢC THỰC HIỆN Ở TRANSFORM STEP
+        # Không cần xử lý lại ở đây, các trường street, ward, district, province đã có sẵn
 
         # Thêm thông tin xử lý unify (chỉ processing_id, timestamp đã có từ transform jobs)
         unified_df = unified_df.withColumn("processing_id", lit(processing_id))

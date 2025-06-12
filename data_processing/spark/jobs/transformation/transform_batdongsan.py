@@ -44,6 +44,7 @@ from common.utils.date_utils import (
 from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
+from common.utils.address_parser import add_address_parsing_to_dataframe
 
 
 # ===================== MAPPING FUNCTIONS =====================
@@ -668,8 +669,25 @@ def transform_batdongsan_data(
             "processing_timestamp", current_timestamp()
         ).withColumn("processing_id", lit(processing_id))
 
-        # Step 7: Simple quality filter (detailed scoring will be done in unify step)
-        final_filtered_df = final_df.filter(
+        # Step 7: ADDRESS PARSING (add before filtering)
+        logger.logger.info("Step 7: Parsing addresses...")
+
+        # ===================== ADDRESS PARSING =====================
+        logger.logger.info("Parsing addresses...")
+
+        # Parse addresses - Batdongsan chỉ có location, không có separate fields
+        # json_path sẽ dùng default path trong address_parser.py
+        address_parsed_df = add_address_parsing_to_dataframe(
+            df=final_df,
+            location_col="location",
+            existing_street_col=None,
+            existing_ward_col=None,
+            existing_district_col=None,
+            existing_province_col=None,
+        )
+
+        # Step 8: Simple quality filter (detailed scoring will be done in unify step)
+        final_filtered_df = address_parsed_df.filter(
             col("area").isNotNull()
             & (col("area") > 0)
             & (
@@ -682,7 +700,7 @@ def transform_batdongsan_data(
 
         logger.log_dataframe_info(final_filtered_df, "silver_data")
 
-        # Step 8: Write silver data
+        # Step 9: Write silver data
         output_path = os.path.join(
             silver_path, f"batdongsan_{input_date.replace('-', '')}.parquet"
         )
