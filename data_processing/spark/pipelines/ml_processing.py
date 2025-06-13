@@ -22,7 +22,6 @@ import argparse
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
 
-
 from common.utils.date_utils import get_date_format
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_optimized_ml_spark_session

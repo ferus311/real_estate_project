@@ -678,13 +678,13 @@ def transform_batdongsan_data(
         # Parse addresses - Batdongsan chỉ có location, không có separate fields
         # json_path sẽ dùng default path trong address_parser.py
         address_parsed_df = add_address_parsing_to_dataframe(
-            df=final_df,
-            location_col="location",
-            existing_street_col=None,
-            existing_ward_col=None,
-            existing_district_col=None,
-            existing_province_col=None,
+            df=final_df, location_col="location"
         )
+
+        logger.log_dataframe_info(address_parsed_df, "after_address_parsing")
+
+        # address_parsed_df now contains both names and IDs for all address components
+        logger.logger.info("Address parsing with IDs completed")
 
         # Step 8: Simple quality filter (detailed scoring will be done in unify step)
         final_filtered_df = address_parsed_df.filter(

@@ -14,6 +14,7 @@ import argparse
 # Thêm thư mục gốc vào sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
+sys.path.append("/app/common")
 
 from jobs.extraction.extract_batdongsan import extract_batdongsan_data
 from jobs.extraction.extract_chotot import extract_chotot_data

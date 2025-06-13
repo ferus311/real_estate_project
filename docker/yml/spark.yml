@@ -37,6 +37,7 @@ services:
             - SPARK_MODE=worker
             - SPARK_MASTER_URL=spark://spark-master:7077
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+        command: bash -c "pip install pandas && /opt/bitnami/scripts/spark/run.sh"
         depends_on:
             - spark-master
 

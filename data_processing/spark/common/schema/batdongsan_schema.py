@@ -1,6 +1,7 @@
 from pyspark.sql.types import (
     StructType,
     StructField,
+    IntegerType,
     StringType,
     DoubleType,
     TimestampType,
@@ -76,6 +77,10 @@ def get_batdongsan_processed_schema():
             StructField("ward", StringType(), True),
             StructField("district", StringType(), True),
             StructField("province", StringType(), True),
+            StructField("province_id", IntegerType(), True),
+            StructField("district_id", IntegerType(), True),
+            StructField("ward_id", IntegerType(), True),
+            StructField("street_id", IntegerType(), True),
             StructField("url", StringType(), True),
             StructField("processing_date", TimestampType(), True),
             StructField("processing_id", StringType(), True),

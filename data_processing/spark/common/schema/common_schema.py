@@ -3,6 +3,7 @@ from pyspark.sql.types import (
     StructField,
     StringType,
     DoubleType,
+    IntegerType,
     TimestampType,
 )
 
@@ -24,9 +25,15 @@ def get_unified_property_schema():
             StructField("location", StringType(), True),
             StructField("data_type", StringType(), True),  # Available in both sources
             # Địa chỉ chi tiết (trích xuất từ location)
+            StructField("street", StringType(), True),
             StructField("province", StringType(), True),
             StructField("district", StringType(), True),
             StructField("ward", StringType(), True),
+            # id của các khu vực (sử dụng IntegerType cho performance tốt hơn)
+            StructField("province_id", IntegerType(), True),
+            StructField("district_id", IntegerType(), True),
+            StructField("ward_id", IntegerType(), True),
+            StructField("street_id", IntegerType(), True),
             # Tọa độ (có sẵn trong cả 2 nguồn)
             StructField("latitude", DoubleType(), True),
             StructField("longitude", DoubleType(), True),
