@@ -47,9 +47,13 @@ def get_unified_property_schema():
             StructField("floor_count", DoubleType(), True),
             # Đặc điểm nhà (có trong cả 2 nguồn)
             StructField("house_direction", StringType(), True),
+            StructField("house_direction_id", IntegerType(), True),
             StructField("legal_status", StringType(), True),
+            StructField("legal_status_id", IntegerType(), True),
             StructField("interior", StringType(), True),
+            StructField("interior_id", IntegerType(), True),
             StructField("house_type", StringType(), True),
+            StructField("house_type_id", IntegerType(), True),
             # Dimension fields (gộp chung thay vì tách riêng từng nguồn)
             StructField("width", DoubleType(), True),  # Chiều rộng
             StructField("length", DoubleType(), True),  # Chiều dài

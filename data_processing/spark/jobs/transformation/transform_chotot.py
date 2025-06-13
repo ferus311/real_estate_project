@@ -55,6 +55,173 @@ from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
 from common.utils.address_parser import add_address_parsing_to_dataframe
+from common.utils.field_mappings import (
+    HOUSE_DIRECTION_MAPPING,
+    LEGAL_STATUS_MAPPING,
+    INTERIOR_MAPPING,
+    HOUSE_TYPE_MAPPING,
+    REVERSE_HOUSE_DIRECTION_MAPPING,
+    REVERSE_LEGAL_STATUS_MAPPING,
+    REVERSE_INTERIOR_MAPPING,
+    REVERSE_HOUSE_TYPE_MAPPING,
+    UNKNOWN_TEXT,
+    UNKNOWN_ID,
+)
+
+# ===================== MAIN TRANSFORMATION FUNCTION =====================
+
+
+def map_chotot_to_standard_format(df: DataFrame) -> DataFrame:
+    """
+    Convert Chotot encoded values to standard text format with IDs
+    Chotot data has encoded values that need to be converted to text + ID format
+    """
+    logger = SparkJobLogger("chotot_mapping")
+
+    mapped_df = df
+
+    # Map house_direction (encoded to text + ID)
+    for encoded_id, text_value in REVERSE_HOUSE_DIRECTION_MAPPING.items():
+        mapped_df = mapped_df.withColumn(
+            "house_direction_text",
+            when(col("house_direction") == encoded_id, lit(text_value)).otherwise(
+                col("house_direction_text")
+                if "house_direction_text" in mapped_df.columns
+                else lit(None)
+            ),
+        ).withColumn(
+            "house_direction_id",
+            when(col("house_direction") == encoded_id, lit(encoded_id)).otherwise(
+                col("house_direction_id")
+                if "house_direction_id" in mapped_df.columns
+                else lit(None)
+            ),
+        )
+
+    # Handle unknown/null values for house_direction
+    mapped_df = mapped_df.withColumn(
+        "house_direction_text",
+        when(col("house_direction_text").isNull(), lit(UNKNOWN_TEXT)).otherwise(
+            col("house_direction_text")
+        ),
+    ).withColumn(
+        "house_direction_id",
+        when(col("house_direction_id").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("house_direction_id")
+        ),
+    )
+
+    return mapped_df
+
+
+def complete_chotot_mapping(df: DataFrame) -> DataFrame:
+    """Complete the mapping for all remaining fields"""
+    logger = SparkJobLogger("complete_chotot_mapping")
+
+    mapped_df = df
+
+    # Map legal_status (encoded to text + ID)
+    for encoded_id, text_value in REVERSE_LEGAL_STATUS_MAPPING.items():
+        mapped_df = mapped_df.withColumn(
+            "legal_status_text",
+            when(col("legal_status") == encoded_id, lit(text_value)).otherwise(
+                col("legal_status_text")
+                if "legal_status_text" in mapped_df.columns
+                else lit(None)
+            ),
+        ).withColumn(
+            "legal_status_id",
+            when(col("legal_status") == encoded_id, lit(encoded_id)).otherwise(
+                col("legal_status_id")
+                if "legal_status_id" in mapped_df.columns
+                else lit(None)
+            ),
+        )
+
+    # Handle unknown/null values for legal_status
+    mapped_df = mapped_df.withColumn(
+        "legal_status_text",
+        when(col("legal_status_text").isNull(), lit(UNKNOWN_TEXT)).otherwise(
+            col("legal_status_text")
+        ),
+    ).withColumn(
+        "legal_status_id",
+        when(col("legal_status_id").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("legal_status_id")
+        ),
+    )
+
+    # Map interior (encoded to text + ID)
+    for encoded_id, text_value in REVERSE_INTERIOR_MAPPING.items():
+        mapped_df = mapped_df.withColumn(
+            "interior_text",
+            when(col("interior") == encoded_id, lit(text_value)).otherwise(
+                col("interior_text")
+                if "interior_text" in mapped_df.columns
+                else lit(None)
+            ),
+        ).withColumn(
+            "interior_id",
+            when(col("interior") == encoded_id, lit(encoded_id)).otherwise(
+                col("interior_id") if "interior_id" in mapped_df.columns else lit(None)
+            ),
+        )
+
+    # Handle unknown/null values for interior
+    mapped_df = mapped_df.withColumn(
+        "interior_text",
+        when(col("interior_text").isNull(), lit(UNKNOWN_TEXT)).otherwise(
+            col("interior_text")
+        ),
+    ).withColumn(
+        "interior_id",
+        when(col("interior_id").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("interior_id")
+        ),
+    )
+
+    # Map house_type (encoded to text + ID)
+    for encoded_id, text_value in REVERSE_HOUSE_TYPE_MAPPING.items():
+        mapped_df = mapped_df.withColumn(
+            "house_type_text",
+            when(col("house_type") == encoded_id, lit(text_value)).otherwise(
+                col("house_type_text")
+                if "house_type_text" in mapped_df.columns
+                else lit(None)
+            ),
+        ).withColumn(
+            "house_type_id",
+            when(col("house_type") == encoded_id, lit(encoded_id)).otherwise(
+                col("house_type_id")
+                if "house_type_id" in mapped_df.columns
+                else lit(None)
+            ),
+        )
+
+    # Handle unknown/null values for house_type
+    mapped_df = mapped_df.withColumn(
+        "house_type_text",
+        when(col("house_type_text").isNull(), lit(UNKNOWN_TEXT)).otherwise(
+            col("house_type_text")
+        ),
+    ).withColumn(
+        "house_type_id",
+        when(col("house_type_id").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("house_type_id")
+        ),
+    )
+
+    # Replace original columns with text versions, keep ID versions
+    final_df = (
+        mapped_df.drop("house_direction", "legal_status", "interior", "house_type")
+        .withColumnRenamed("house_direction_text", "house_direction")
+        .withColumnRenamed("legal_status_text", "legal_status")
+        .withColumnRenamed("interior_text", "interior")
+        .withColumnRenamed("house_type_text", "house_type")
+    )
+
+    logger.logger.info("Completed Chotot encoding to text + ID mapping")
+    return final_df
 
 
 # ===================== MAIN TRANSFORMATION FUNCTION =====================
@@ -262,12 +429,21 @@ def transform_chotot_data(
             ~col("has_invalid_unit")  # Filter out records with "nghìn" units
         ).drop("has_invalid_unit")
 
+        # ===================== MAPPING STEP =====================
+        logger.logger.info("Step 5.5: Converting encoded fields to text + ID format...")
+
+        # Apply Chotot specific mapping to convert encoded values to text + ID
+        mapped_step1_df = map_chotot_to_standard_format(final_clean_df)
+        mapped_df = complete_chotot_mapping(mapped_step1_df)
+
+        logger.log_dataframe_info(mapped_df, "after_chotot_mapping")
+
         # ===================== ADDRESS PARSING =====================
-        logger.logger.info("Step 6:Parsing addresses...")
+        logger.logger.info("Step 6: Parsing addresses...")
 
         # Parse addresses - Chotot chỉ dùng location column
         address_parsed_df = add_address_parsing_to_dataframe(
-            df=final_clean_df, location_col="location"
+            df=mapped_df, location_col="location"
         )
 
         logger.log_dataframe_info(address_parsed_df, "after_address_parsing_with_ids")

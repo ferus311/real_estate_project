@@ -60,11 +60,16 @@ def get_batdongsan_processed_schema():
             StructField("description", StringType(), True),
             StructField("facade_width", DoubleType(), True),
             StructField("floor_count", DoubleType(), True),
+
             StructField("house_direction", StringType(), True),
+            StructField("house_direction_id", IntegerType(), True),
             StructField("interior", StringType(), True),
-            StructField("latitude", DoubleType(), True),
+            StructField("interior_id", IntegerType(), True),
             StructField("legal_status", StringType(), True),
+            StructField("legal_status_id", IntegerType(), True),
+
             StructField("location", StringType(), True),
+            StructField("latitude", DoubleType(), True),
             StructField("longitude", DoubleType(), True),
             StructField("posted_date", TimestampType(), True),
             StructField("price", DoubleType(), True),
@@ -73,6 +78,7 @@ def get_batdongsan_processed_schema():
             StructField("seller_info", StringType(), True),
             StructField("source", StringType(), True),
             StructField("title", StringType(), True),
+
             StructField("street", StringType(), True),
             StructField("ward", StringType(), True),
             StructField("district", StringType(), True),
@@ -81,6 +87,7 @@ def get_batdongsan_processed_schema():
             StructField("district_id", IntegerType(), True),
             StructField("ward_id", IntegerType(), True),
             StructField("street_id", IntegerType(), True),
+
             StructField("url", StringType(), True),
             StructField("processing_date", TimestampType(), True),
             StructField("processing_id", StringType(), True),

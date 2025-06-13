@@ -45,126 +45,387 @@ from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
 from common.utils.address_parser import add_address_parsing_to_dataframe
+from common.utils.field_mappings import (
+    HOUSE_DIRECTION_MAPPING,
+    LEGAL_STATUS_MAPPING,
+    INTERIOR_MAPPING,
+    HOUSE_TYPE_MAPPING,
+    UNKNOWN_TEXT,
+    UNKNOWN_ID,
+)
+
+# ===================== BATDONGSAN SPECIFIC MAPPING FUNCTIONS =====================
 
 
-# ===================== MAPPING FUNCTIONS =====================
+def map_batdongsan_house_direction_comprehensive(value):
+    """Comprehensive mapping for house direction based on statistics analysis"""
+    if value is None or str(value).strip() == "":
+        return (UNKNOWN_TEXT, UNKNOWN_ID)
+
+    value_clean = str(value).lower().strip().replace(" ", "").replace("-", "")
+
+    # Direct mappings based on statistics
+    if value_clean in ["đông", "dong"]:
+        return ("Đông", HOUSE_DIRECTION_MAPPING["Đông"])
+    elif value_clean in ["tây", "tay"]:
+        return ("Tây", HOUSE_DIRECTION_MAPPING["Tây"])
+    elif value_clean in ["nam"]:
+        return ("Nam", HOUSE_DIRECTION_MAPPING["Nam"])
+    elif value_clean in ["bắc", "bac"]:
+        return ("Bắc", HOUSE_DIRECTION_MAPPING["Bắc"])
+    elif value_clean in ["đôngbắc", "dongbac", "đông-bắc", "dong-bac"]:
+        return ("Đông Bắc", HOUSE_DIRECTION_MAPPING["Đông Bắc"])
+    elif value_clean in ["đôngnam", "dongnam", "đông-nam", "dong-nam"]:
+        return ("Đông Nam", HOUSE_DIRECTION_MAPPING["Đông Nam"])
+    elif value_clean in ["tâybắc", "taybac", "tây-bắc", "tay-bac"]:
+        return ("Tây Bắc", HOUSE_DIRECTION_MAPPING["Tây Bắc"])
+    elif value_clean in ["tâynam", "taynam", "tây-nam", "tay-nam"]:
+        return ("Tây Nam", HOUSE_DIRECTION_MAPPING["Tây Nam"])
+    else:
+        return (UNKNOWN_TEXT, UNKNOWN_ID)
 
 
-def map_house_direction(value):
-    """Map house direction to standardized values"""
-    if value is None or value == "":
-        return "UNKNOWN"
+def map_batdongsan_legal_status_comprehensive(value):
+    """Comprehensive mapping for legal status based on statistics analysis"""
+    if value is None or str(value).strip() == "":
+        return (UNKNOWN_TEXT, UNKNOWN_ID)
 
-    value_normalized = value.lower().replace(" ", "").replace("-", "")
+    value_clean = str(value).lower().strip()
 
-    direction_mapping = {
-        "dong": "EAST",
-        "đông": "EAST",
-        "tay": "WEST",
-        "tây": "WEST",
-        "nam": "SOUTH",
-        "bac": "NORTH",
-        "bắc": "NORTH",
-        "dongnam": "SOUTHEAST",
-        "đôngnam": "SOUTHEAST",
-        "namdong": "SOUTHEAST",
-        "namđông": "SOUTHEAST",
-        "dongbac": "NORTHEAST",
-        "đôngbắc": "NORTHEAST",
-        "bacdong": "NORTHEAST",
-        "bắcđông": "NORTHEAST",
-        "taynam": "SOUTHWEST",
-        "tâynam": "SOUTHWEST",
-        "namtay": "SOUTHWEST",
-        "namtây": "SOUTHWEST",
-        "taybac": "NORTHWEST",
-        "tâybắc": "NORTHWEST",
-        "bactay": "NORTHWEST",
-        "bắctây": "NORTHWEST",
-    }
+    # Mapping based on user statistics - prioritize most common patterns
+    # Group 1: "Đã có sổ" (Red book/Pink book related)
+    red_book_patterns = [
+        "sổ đỏ",
+        "sổ hồng",
+        "có sổ",
+        "đã có sổ",
+        "sổ đỏ/sổ hồng",
+        "sổ hồng riêng",
+        "sổ hồng chính chủ",
+        "sổ đỏ chính chủ",
+        "shr",
+        "shcc",
+        "sđcc",
+        "sdcc",
+        "bìa đỏ",
+        "sổ đẹp",
+        "sổ vuông vắn",
+        "sổ sẵn",
+        "sổ riêng",
+        "sổ hồng cá nhân",
+    ]
 
-    return direction_mapping.get(value_normalized, "UNKNOWN")
+    for pattern in red_book_patterns:
+        if pattern in value_clean:
+            return ("Đã có sổ", LEGAL_STATUS_MAPPING["Đã có sổ"])
+
+    # Group 2: "Đang chờ sổ"
+    waiting_patterns = ["đang chờ sổ", "chờ sổ", "làm sổ"]
+    for pattern in waiting_patterns:
+        if pattern in value_clean:
+            return ("Đang chờ sổ", LEGAL_STATUS_MAPPING["Đang chờ sổ"])
+
+    # Group 3: "Không có sổ"
+    no_legal_patterns = ["không pháp lý", "ko sổ", "không"]
+    for pattern in no_legal_patterns:
+        if pattern in value_clean:
+            return ("Không có sổ", LEGAL_STATUS_MAPPING["Không có sổ"])
+
+    # Group 4: "Sổ chung / Vi bằng"
+    shared_patterns = [
+        "hợp đồng mua bán",
+        "hđmb",
+        "vi bằng",
+        "vbcn",
+        "mua bán vi bằng",
+        "ccvb",
+        "giấy tay",
+        "giấy tờ viết tay",
+        "sổ chung",
+    ]
+    for pattern in shared_patterns:
+        if pattern in value_clean:
+            return ("Sổ chung / Vi bằng", LEGAL_STATUS_MAPPING["Sổ chung / Vi bằng"])
+
+    # Group 5: "Giấy tờ viết tay" - handled above in shared patterns
+
+    # If no match found
+    return (UNKNOWN_TEXT, UNKNOWN_ID)
 
 
-def map_interior_status(value):
-    """Map interior status to standardized categories"""
-    if value is None or value == "":
-        return "UNKNOWN"
+def map_batdongsan_interior_comprehensive(value):
+    """Comprehensive mapping for interior based on statistics analysis"""
+    if value is None or str(value).strip() == "":
+        return (UNKNOWN_TEXT, UNKNOWN_ID)
 
-    value_lower = value.lower()
+    value_clean = str(value).lower().strip()
 
-    luxury_keywords = [
+    # Group 1: "Cao cấp" - luxury keywords
+    luxury_patterns = [
         "cao cấp",
-        "caocấp",
-        "luxury",
+        "nội thất cao cấp",
         "sang trọng",
-        "sangtrọng",
         "xịn",
-        "5*",
+        "luxury",
         "5 sao",
         "nhập khẩu",
-        "nhậpkhẩu",
+        "gỗ cao cấp",
+        "full nội thất cao cấp",
+        "nội thất sang trọng",
+        "trang thiết bị cao cấp",
+        "xịn sò",
+        "cực kỳ đẹp",
+        "nội thất xịn",
+        "nội thất đẹp",
     ]
-    if any(keyword in value_lower for keyword in luxury_keywords):
-        return "LUXURY"
 
-    furnished_keywords = [
+    for pattern in luxury_patterns:
+        if pattern in value_clean:
+            return ("Cao cấp", INTERIOR_MAPPING["Cao cấp"])
+
+    # Group 2: "Đầy đủ" - fully furnished
+    full_patterns = [
         "đầy đủ",
-        "đầyđủ",
         "full",
-        "hoàn thiện",
-        "hoànthiện",
-        "trang bị",
-        "trangbị",
+        "nội thất đầy đủ",
+        "full nội thất",
+        "để lại toàn bộ nội thất",
+        "trang bị đầy đủ",
         "nội thất",
-        "nộithất",
+        "đầy đủ tiện nghi",
+        "hoàn thiện",
+        "tặng nội thất",
     ]
-    if any(keyword in value_lower for keyword in furnished_keywords):
-        return "FULLY_FURNISHED"
 
-    basic_keywords = ["cơ bản", "cơbản", "bình thường", "bìnhthường", "chuẩn"]
-    if any(keyword in value_lower for keyword in basic_keywords):
-        return "BASIC"
+    for pattern in full_patterns:
+        if pattern in value_clean and not any(
+            lux in value_clean for lux in luxury_patterns
+        ):
+            return ("Đầy đủ", INTERIOR_MAPPING["Đầy đủ"])
 
-    unfurnished_keywords = ["thô", "trống", "không", "k ", "nt", "nhà thô", "nhàthô"]
-    if any(keyword in value_lower for keyword in unfurnished_keywords):
-        return "UNFURNISHED"
+    # Group 3: "Cơ bản" - basic furnishing
+    basic_patterns = [
+        "cơ bản",
+        "nội thất cơ bản",
+        "một số nội thất",
+        "điều hòa",
+        "tủ lạnh",
+        "giường",
+        "tủ",
+    ]
 
-    return "UNKNOWN"
+    for pattern in basic_patterns:
+        if pattern in value_clean:
+            return ("Cơ bản", INTERIOR_MAPPING["Cơ bản"])
+
+    # Group 4: "Bàn giao thô" - unfurnished
+    unfurnished_patterns = [
+        "không nội thất",
+        "nhà thô",
+        "bàn giao thô",
+        "thô",
+        "giao thô",
+        "hoàn thiện bên ngoài",
+    ]
+
+    for pattern in unfurnished_patterns:
+        if pattern in value_clean:
+            return ("Bàn giao thô", INTERIOR_MAPPING["Bàn giao thô"])
+
+    # If no clear match but has content, default to basic
+    if value_clean and value_clean != "k":
+        return ("Đầy đủ", INTERIOR_MAPPING["Đầy đủ"])  # Most common case
+
+    return (UNKNOWN_TEXT, UNKNOWN_ID)
 
 
-def map_legal_status(value):
-    """Map legal status to standardized categories"""
-    if value is None or value == "":
-        return "UNKNOWN"
+def apply_batdongsan_comprehensive_mapping(df: DataFrame) -> DataFrame:
+    """Apply comprehensive mapping for batdongsan text data using Spark SQL expressions"""
+    logger = SparkJobLogger("batdongsan_comprehensive_mapping")
 
-    value_normalized = (
-        value.lower()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace(".", "")
-        .replace("/", "")
-        .replace("\\", "")
-        .replace(",", "")
+    # Use case-when expressions instead of UDFs to avoid serialization issues
+    mapped_df = df
+
+    # Map house_direction using CASE WHEN expressions
+    mapped_df = mapped_df.withColumn(
+        "house_direction_text",
+        when(
+            lower(trim(col("house_direction"))).rlike("(^|\\s)(đông|dong)(\\s|$)")
+            & ~lower(trim(col("house_direction"))).rlike("(nam|bắc|bac)"),
+            lit("Đông"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike("(^|\\s)(tây|tay)(\\s|$)")
+            & ~lower(trim(col("house_direction"))).rlike("(nam|bắc|bac)"),
+            lit("Tây"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike("(^|\\s)nam(\\s|$)")
+            & ~lower(trim(col("house_direction"))).rlike("(đông|dong|tây|tay)"),
+            lit("Nam"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike("(^|\\s)(bắc|bac)(\\s|$)")
+            & ~lower(trim(col("house_direction"))).rlike("(đông|dong|tây|tay)"),
+            lit("Bắc"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike(
+                "(đông|dong).*(bắc|bac)|(bắc|bac).*(đông|dong)"
+            ),
+            lit("Đông Bắc"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike(
+                "(đông|dong).*nam|nam.*(đông|dong)"
+            ),
+            lit("Đông Nam"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike(
+                "(tây|tay).*(bắc|bac)|(bắc|bac).*(tây|tay)"
+            ),
+            lit("Tây Bắc"),
+        )
+        .when(
+            lower(trim(col("house_direction"))).rlike("(tây|tay).*nam|nam.*(tây|tay)"),
+            lit("Tây Nam"),
+        )
+        .otherwise(lit(UNKNOWN_TEXT)),
+    ).withColumn(
+        "house_direction_id",
+        when(
+            col("house_direction_text") == "Đông", lit(HOUSE_DIRECTION_MAPPING["Đông"])
+        )
+        .when(col("house_direction_text") == "Tây", lit(HOUSE_DIRECTION_MAPPING["Tây"]))
+        .when(col("house_direction_text") == "Nam", lit(HOUSE_DIRECTION_MAPPING["Nam"]))
+        .when(col("house_direction_text") == "Bắc", lit(HOUSE_DIRECTION_MAPPING["Bắc"]))
+        .when(
+            col("house_direction_text") == "Đông Bắc",
+            lit(HOUSE_DIRECTION_MAPPING["Đông Bắc"]),
+        )
+        .when(
+            col("house_direction_text") == "Đông Nam",
+            lit(HOUSE_DIRECTION_MAPPING["Đông Nam"]),
+        )
+        .when(
+            col("house_direction_text") == "Tây Bắc",
+            lit(HOUSE_DIRECTION_MAPPING["Tây Bắc"]),
+        )
+        .when(
+            col("house_direction_text") == "Tây Nam",
+            lit(HOUSE_DIRECTION_MAPPING["Tây Nam"]),
+        )
+        .otherwise(lit(UNKNOWN_ID)),
     )
 
-    no_legal_keywords = ["khôngpháplý", "khongphapły", "không", "khong"]
-    if any(keyword in value_normalized for keyword in no_legal_keywords):
-        return "NO_LEGAL"
+    # Map legal_status using CASE WHEN expressions
+    mapped_df = mapped_df.withColumn(
+        "legal_status_text",
+        when(
+            lower(trim(col("legal_status"))).rlike(
+                "(sổ đỏ|sổ hồng|có sổ|đã có sổ|shr|shcc|sđcc|sdcc|bìa đỏ)"
+            ),
+            lit("Đã có sổ"),
+        )
+        .when(
+            lower(trim(col("legal_status"))).rlike("(đang chờ sổ|chờ sổ|làm sổ)"),
+            lit("Đang chờ sổ"),
+        )
+        .when(
+            lower(trim(col("legal_status"))).rlike("(không pháp lý|ko sổ|không)"),
+            lit("Không có sổ"),
+        )
+        .when(
+            lower(trim(col("legal_status"))).rlike(
+                "(hợp đồng mua bán|hđmb|vi bằng|vbcn|giấy tay|giấy tờ viết tay|sổ chung)"
+            ),
+            lit("Sổ chung / Vi bằng"),
+        )
+        .otherwise(lit(UNKNOWN_TEXT)),
+    ).withColumn(
+        "legal_status_id",
+        when(
+            col("legal_status_text") == "Đã có sổ",
+            lit(LEGAL_STATUS_MAPPING["Đã có sổ"]),
+        )
+        .when(
+            col("legal_status_text") == "Đang chờ sổ",
+            lit(LEGAL_STATUS_MAPPING["Đang chờ sổ"]),
+        )
+        .when(
+            col("legal_status_text") == "Không có sổ",
+            lit(LEGAL_STATUS_MAPPING["Không có sổ"]),
+        )
+        .when(
+            col("legal_status_text") == "Sổ chung / Vi bằng",
+            lit(LEGAL_STATUS_MAPPING["Sổ chung / Vi bằng"]),
+        )
+        .otherwise(lit(UNKNOWN_ID)),
+    )
 
-    land_use_keywords = ["thổcư", "thocu", "cnqsdđ", "cnqsdd"]
-    if any(keyword in value_normalized for keyword in land_use_keywords):
-        return "LAND_USE_CERTIFICATE"
+    # Map interior using CASE WHEN expressions
+    mapped_df = mapped_df.withColumn(
+        "interior_text",
+        when(
+            lower(trim(col("interior"))).rlike(
+                "(cao cấp|sang trọng|xịn|luxury|5 sao|nhập khẩu)"
+            ),
+            lit("Cao cấp"),
+        )
+        .when(
+            lower(trim(col("interior"))).rlike(
+                "(không nội thất|nhà thô|bàn giao thô|thô|giao thô)"
+            ),
+            lit("Bàn giao thô"),
+        )
+        .when(
+            lower(trim(col("interior"))).rlike(
+                "(cơ bản|nội thất cơ bản|một số nội thất|điều hòa|tủ lạnh|giường|tủ)"
+            ),
+            lit("Cơ bản"),
+        )
+        .when(
+            lower(trim(col("interior"))).rlike(
+                "(đầy đủ|full|nội thất|trang bị|tiện nghi|hoàn thiện|tặng)"
+            )
+            & ~lower(trim(col("interior"))).rlike("(cao cấp|sang trọng|xịn|luxury)"),
+            lit("Đầy đủ"),
+        )
+        .when(
+            trim(col("interior")).isNotNull()
+            & (trim(col("interior")) != "")
+            & (trim(col("interior")) != "k"),
+            lit("Đầy đủ"),  # Default for non-empty values
+        )
+        .otherwise(lit(UNKNOWN_TEXT)),
+    ).withColumn(
+        "interior_id",
+        when(col("interior_text") == "Cao cấp", lit(INTERIOR_MAPPING["Cao cấp"]))
+        .when(col("interior_text") == "Đầy đủ", lit(INTERIOR_MAPPING["Đầy đủ"]))
+        .when(col("interior_text") == "Cơ bản", lit(INTERIOR_MAPPING["Cơ bản"]))
+        .when(
+            col("interior_text") == "Bàn giao thô",
+            lit(INTERIOR_MAPPING["Bàn giao thô"]),
+        )
+        .otherwise(lit(UNKNOWN_ID)),
+    )
 
-    red_book_keywords = ["sổđỏ", "sodo", "sổhồng", "sohong", "sđcc"]
-    if any(keyword in value_normalized for keyword in red_book_keywords):
-        return "RED_BOOK"
+    # Create final dataframe with updated column names
+    final_df = (
+        mapped_df.drop("house_direction", "legal_status", "interior")
+        .withColumnRenamed("house_direction_text", "house_direction")
+        .withColumnRenamed("legal_status_text", "legal_status")
+        .withColumnRenamed("interior_text", "interior")
+    )
 
-    ownership_keywords = ["shcc", "shr", "ccqsh", "chứngnhận", "chungnhan"]
-    if any(keyword in value_normalized for keyword in ownership_keywords):
-        return "OWNERSHIP_CERTIFICATE"
+    logger.logger.info(
+        "Completed comprehensive batdongsan text to standardized mapping"
+    )
+    return final_df
 
-    return "UNKNOWN"
+
+# ===================== PRICE PROCESSING =====================
 
 
 # ===================== PRICE PROCESSING =====================
@@ -496,142 +757,17 @@ def transform_batdongsan_data(
         logger.logger.info("Step 2: Processing price data...")
         price_df = process_price_data(numeric_df)
 
-        # Step 3: Categorical mappings - Using direct SQL expressions instead of UDFs
-        logger.logger.info("Step 3: Applying categorical mappings...")
+        # Step 3: Comprehensive categorical mappings with ID assignment
+        logger.logger.info("Step 3: Applying comprehensive categorical mappings...")
 
-        # Direction mapping with CASE WHEN
-        mapped_df = price_df.withColumn(
-            "house_direction",
-            when(
-                (
-                    lower(col("house_direction")).contains("dong")
-                    | lower(col("house_direction")).contains("đông")
-                ),
-                lit("EAST"),
-            )
-            .when(
-                (
-                    lower(col("house_direction")).contains("tay")
-                    | lower(col("house_direction")).contains("tây")
-                ),
-                lit("WEST"),
-            )
-            .when(lower(col("house_direction")).contains("nam"), lit("SOUTH"))
-            .when(
-                (
-                    lower(col("house_direction")).contains("bac")
-                    | lower(col("house_direction")).contains("bắc")
-                ),
-                lit("NORTH"),
-            )
-            .when(
-                (
-                    lower(col("house_direction")).contains("dongnam")
-                    | lower(col("house_direction")).contains("đôngnam")
-                ),
-                lit("SOUTHEAST"),
-            )
-            .when(
-                (
-                    lower(col("house_direction")).contains("dongbac")
-                    | lower(col("house_direction")).contains("đôngbắc")
-                ),
-                lit("NORTHEAST"),
-            )
-            .when(
-                (
-                    lower(col("house_direction")).contains("taynam")
-                    | lower(col("house_direction")).contains("tâynam")
-                ),
-                lit("SOUTHWEST"),
-            )
-            .when(
-                (
-                    lower(col("house_direction")).contains("taybac")
-                    | lower(col("house_direction")).contains("tâybắc")
-                ),
-                lit("NORTHWEST"),
-            )
-            .otherwise(lit("UNKNOWN")),
-        )
-
-        # Interior mapping with CASE WHEN
-        mapped_df = mapped_df.withColumn(
-            "interior",
-            when(
-                (
-                    lower(col("interior")).contains("cao cấp")
-                    | lower(col("interior")).contains("luxury")
-                    | lower(col("interior")).contains("sang trọng")
-                ),
-                lit("LUXURY"),
-            )
-            .when(
-                (
-                    lower(col("interior")).contains("đầy đủ")
-                    | lower(col("interior")).contains("full")
-                    | lower(col("interior")).contains("nội thất")
-                ),
-                lit("FULLY_FURNISHED"),
-            )
-            .when(
-                (
-                    lower(col("interior")).contains("cơ bản")
-                    | lower(col("interior")).contains("bình thường")
-                ),
-                lit("BASIC"),
-            )
-            .when(
-                (
-                    lower(col("interior")).contains("thô")
-                    | lower(col("interior")).contains("trống")
-                    | lower(col("interior")).contains("không")
-                ),
-                lit("UNFURNISHED"),
-            )
-            .otherwise(lit("UNKNOWN")),
-        )
-
-        # Legal status mapping with CASE WHEN
-        mapped_df = mapped_df.withColumn(
-            "legal_status",
-            when(
-                (
-                    lower(col("legal_status")).contains("không")
-                    | lower(col("legal_status")).contains("khong")
-                ),
-                lit("NO_LEGAL"),
-            )
-            .when(
-                (
-                    lower(col("legal_status")).contains("thổ cư")
-                    | lower(col("legal_status")).contains("thổcư")
-                    | lower(col("legal_status")).contains("cnqsd")
-                ),
-                lit("LAND_USE_CERTIFICATE"),
-            )
-            .when(
-                (
-                    lower(col("legal_status")).contains("sổ đỏ")
-                    | lower(col("legal_status")).contains("sổhồng")
-                    | lower(col("legal_status")).contains("sđcc")
-                ),
-                lit("RED_BOOK"),
-            )
-            .when(
-                (
-                    lower(col("legal_status")).contains("shcc")
-                    | lower(col("legal_status")).contains("shr")
-                    | lower(col("legal_status")).contains("chứng nhận")
-                ),
-                lit("OWNERSHIP_CERTIFICATE"),
-            )
-            .otherwise(lit("UNKNOWN")),
-        )
+        # Apply comprehensive mapping for batdongsan text data
+        mapped_df = apply_batdongsan_comprehensive_mapping(price_df)
 
         # Cache after categorical mapping to break lineage
         mapped_df.cache()
-        logger.logger.info(f"Cached categorical mapping: {mapped_df.count():,} records")
+        logger.logger.info(
+            f"Cached comprehensive categorical mapping: {mapped_df.count():,} records"
+        )
 
         # Step 4: Apply coordinate validation
         logger.logger.info("Step 4: Validating coordinates...")
