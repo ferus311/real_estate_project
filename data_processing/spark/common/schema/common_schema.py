@@ -25,10 +25,10 @@ def get_unified_property_schema():
             StructField("location", StringType(), True),
             StructField("data_type", StringType(), True),  # Available in both sources
             # Địa chỉ chi tiết (trích xuất từ location)
-            StructField("street", StringType(), True),
             StructField("province", StringType(), True),
             StructField("district", StringType(), True),
             StructField("ward", StringType(), True),
+            StructField("street", StringType(), True),
             # id của các khu vực (sử dụng IntegerType cho performance tốt hơn)
             StructField("province_id", IntegerType(), True),
             StructField("district_id", IntegerType(), True),
@@ -47,13 +47,13 @@ def get_unified_property_schema():
             StructField("floor_count", DoubleType(), True),
             # Đặc điểm nhà (có trong cả 2 nguồn)
             StructField("house_direction", StringType(), True),
-            StructField("house_direction_id", IntegerType(), True),
+            StructField("house_direction_code", IntegerType(), True),
             StructField("legal_status", StringType(), True),
-            StructField("legal_status_id", IntegerType(), True),
+            StructField("legal_status_code", IntegerType(), True),
             StructField("interior", StringType(), True),
-            StructField("interior_id", IntegerType(), True),
+            StructField("interior_code", IntegerType(), True),
             StructField("house_type", StringType(), True),
-            StructField("house_type_id", IntegerType(), True),
+            StructField("house_type_code", IntegerType(), True),
             # Dimension fields (gộp chung thay vì tách riêng từng nguồn)
             StructField("width", DoubleType(), True),  # Chiều rộng
             StructField("length", DoubleType(), True),  # Chiều dài

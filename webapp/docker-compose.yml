@@ -1,0 +1,81 @@
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:13
+    container_name: realestate_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    networks:
+      - realestate_network
+      - hdfs_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django Backend
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: realestate_backend
+    environment:
+      # Database Configuration for Real Estate Project
+      - POSTGRES_DB=realestate
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=realestate123
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - DEBUG=${DEBUG}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server:/app
+      - ../../data_processing/ml:/app/ml_models  # ML models từ HDFS
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - realestate_network
+      - hdfs_network
+    command: >
+      sh -c "echo 'Waiting for database...' &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  # React Frontend - Temporarily disabled due to npm network timeout
+  # frontend:
+  #   build:
+  #     context: ./client
+  #     dockerfile: Dockerfile
+  #   container_name: realestate_frontend
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - REACT_APP_API_URL=http://localhost:8000/api
+  #   volumes:
+  #     - ./client:/app
+  #     - /app/node_modules  # Avoid overwriting node_modules
+  #   depends_on:
+  #     - backend
+  #   networks:
+  #     - realestate_network
+
+volumes:
+  postgres_data:
+
+networks:
+  realestate_network:
+    driver: bridge
+  hdfs_network:
+    external: true

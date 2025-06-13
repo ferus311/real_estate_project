@@ -3,7 +3,8 @@ Load dữ liệu vào Serving Layer (PostgreSQL) cho Web API
 """
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, lit, current_timestamp, when, coalesce
+from pyspark.sql.functions import col, lit, current_timestamp, when, coalesce, row_number, desc
+from pyspark.sql.window import Window
 import sys
 import os
 from datetime import datetime
@@ -46,12 +47,12 @@ def load_to_serving_layer(
     if input_date is None:
         input_date = get_date_format()
 
-    # Default PostgreSQL config
+    # Default PostgreSQL config từ environment variables
     if postgres_config is None:
         postgres_config = {
-            "url": "jdbc:postgresql://realestate-postgres:5432/realestate",
-            "user": "postgres",
-            "password": "password",
+            "url": f"jdbc:postgresql://{os.getenv('POSTGRES_HOST', 'db')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'realestate')}",
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", "password"),
             "driver": "org.postgresql.Driver",
         }
 
@@ -61,7 +62,7 @@ def load_to_serving_layer(
 
         # 2. Transform cho serving needs
         serving_df = transform_for_serving(gold_df, logger)
-
+        serving_df = serving_df.dropDuplicates(["id"])
         # 3. Load vào PostgreSQL
         load_to_postgres(serving_df, postgres_config, logger)
 
@@ -85,9 +86,11 @@ def extract_from_gold(spark: SparkSession, input_date: str, property_type: str, 
 
     for ptype in property_types:
         # Đọc từ unified data trong Gold layer
-        gold_path = get_hdfs_path(
-            "/data/realestate/processed/gold/unified", ptype, input_date
-        )
+        # gold_path = get_hdfs_path(
+        #     "/data/realestate/processed/gold/unified", ptype, input_date.replace("-", "/")
+        # )
+        date_formatted = input_date.replace("-", "/")
+        gold_path = f"/data/realestate/processed/gold/unified/{ptype}/{date_formatted}/unified_*.parquet"
 
         try:
             df = spark.read.parquet(gold_path)
@@ -110,100 +113,194 @@ def extract_from_gold(spark: SparkSession, input_date: str, property_type: str, 
 
 
 def transform_for_serving(gold_df: DataFrame, logger):
-    """Transform dữ liệu cho serving layer"""
+    """Transform dữ liệu từ Gold layer cho PostgreSQL serving layer"""
 
     # Debug: Kiểm tra schema của Gold layer
     logger.logger.info("🔍 Gold layer schema:")
     for field in gold_df.schema.fields:
         logger.logger.info(f"  - {field.name}: {field.dataType}")
 
-    # Select và transform fields cho web serving - map từ Gold schema
+    # Complete mapping từ Gold schema sang PostgreSQL schema
     serving_df = gold_df.select(
-        # Core property fields
-        col("id").alias("property_id"),
+        # Primary identifiers
+        col("id"),  # Keep as is - VARCHAR(255) in PostgreSQL
+        col("url"),
+        col("source"),
+        # Basic property information
         col("title"),
-        col("price").cast("bigint"),
-        col("area").cast("real"),
-        col("bedroom").cast("int").alias("bedrooms"),  # Map bedroom -> bedrooms
-        col("bathroom").cast("int").alias("bathrooms"),  # Map bathroom -> bathrooms
         col("description"),
-        # Location fields
+        col("location"),  # full location text
+        col("data_type"),
+        # Location information (text fields)
         col("province"),
         col("district"),
         col("ward"),
-        col("location").alias("address"),  # Map location -> address
+        col("street"),
+        # Location IDs for efficient queries
+        col("province_id").cast("int"),
+        col("district_id").cast("int"),
+        col("ward_id").cast("int"),
+        col("street_id").cast("int"),
+        # Geographic coordinates
         col("latitude").cast("double"),
         col("longitude").cast("double"),
-        # Source fields
-        col("source"),
-        col("url"),
-        # Metadata - sử dụng processing_timestamp từ Gold nếu có
-        coalesce(col("processing_timestamp"), current_timestamp()).alias("created_at"),
+        # Core metrics
+        col("price").cast("bigint"),
+        col("area").cast("double"),
+        col("price_per_m2").cast("bigint"),
+        # Property details (keep original names to match Django schema)
+        col("bedroom").cast("double"),  # from Gold: bedroom (can be decimal)
+        col("bathroom").cast("double"),  # from Gold: bathroom (can be decimal)
+        col("floor_count").cast("int"),
+        # Dimensions
+        col("width").cast("double"),
+        col("length").cast("double"),
+        col("living_size").cast("double"),
+        col("facade_width").cast("double"),
+        col("road_width").cast("double"),
+        # Property characteristics
+        col("house_direction"),
+        col("house_direction_code").cast("int"),
+        col("legal_status"),
+        col("legal_status_code").cast("int"),
+        col("interior"),
+        col("interior_code").cast("int"),
+        col("house_type"),
+        col("house_type_code").cast("int"),
+        # Timestamps
+        col("posted_date").cast("timestamp"),
+        col("crawl_timestamp").cast("timestamp"),
+        col("processing_timestamp").cast("timestamp"),
+        # Data quality and processing metadata
+        col("data_quality_score").cast("double"),
+        col("processing_id"),
+        # Serving layer metadata
+        current_timestamp().alias("created_at"),
         current_timestamp().alias("updated_at"),
-        lit(datetime.now().strftime("%Y-%m-%d")).alias("processing_date"),
     ).filter(
-        # Basic data quality filters for serving
-        col("price").isNotNull()
-        & col("area").isNotNull()
+        # Enhanced data quality filters
+        col("id").isNotNull()
         & col("title").isNotNull()
-        & (col("price") > 0)
-        & (col("area") > 0)
+        & col("source").isNotNull()
+        # Price and area can be null for some property types
+        & (col("price").isNull() | (col("price") >= 0))
+        & (col("area").isNull() | (col("area") > 0))
+        # Coordinate validation
+        & (
+            (col("latitude").isNull() & col("longitude").isNull())
+            | (col("latitude").between(-90, 90) & col("longitude").between(-180, 180))
+        )
     )
 
-    logger.logger.info(f"📊 Transformed {serving_df.count():,} records for serving")
+    # Calculate counts for logging
+    original_count = gold_df.count()
+    filtered_count = serving_df.count()
+    logger.logger.info(
+        f"📊 Filtered {filtered_count:,}/{original_count:,} records after quality checks"
+    )
+
+    # Xử lý duplicate records dựa trên data_quality_score
+    # Nếu trùng ID, giữ lại record có data_quality_score cao hơn
+    # Nếu data_quality_score bằng nhau, giữ lại record mới nhất (dựa trên processing_timestamp)
+    logger.logger.info("🔍 Handling duplicate IDs based on data_quality_score...")
+
+    # Tạo window để rank records theo ID
+    window_spec = Window.partitionBy("id").orderBy(
+        desc("data_quality_score"),
+        desc("processing_timestamp"),
+        desc("updated_at")
+    )
+
+    # Thêm row_number để identify record tốt nhất cho mỗi ID
+    serving_df_ranked = serving_df.withColumn("row_num", row_number().over(window_spec))
+
+    # Chỉ giữ lại record tốt nhất (row_num = 1)
+    serving_df_deduped = serving_df_ranked.filter(col("row_num") == 1).drop("row_num")
+
+    # Log deduplication results
+    deduped_count = serving_df_deduped.count()
+    if filtered_count > deduped_count:
+        logger.logger.info(
+            f"� Deduplicated {filtered_count - deduped_count:,} records based on data_quality_score"
+        )
+
+    serving_df = serving_df_deduped
+
+    # Log transformation results
+    original_count = gold_df.count()
+    final_count = serving_df.count()
+    logger.logger.info(
+        f"📊 Final result: {final_count:,}/{original_count:,} records for serving"
+    )
+
+    if filtered_count < original_count:
+        logger.logger.info(
+            f"🔍 Filtered out {original_count - filtered_count:,} records due to data quality issues"
+        )
+
     return serving_df
 
 
 def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
-    """Load dữ liệu vào PostgreSQL với upsert logic"""
+    """Load dữ liệu vào PostgreSQL với UPSERT logic"""
 
-    # PostgreSQL có UNIQUE constraint trên (url, source), nên sẽ conflict khi có duplicate
-    # Cách 1: Thử append trước, nếu failed thì overwrite staging table
+    # Tối ưu hóa Spark cho PostgreSQL write
+    serving_df = serving_df.coalesce(4)  # Giảm số partitions để tăng batch size
+
+    # PostgreSQL write configuration
+    write_options = {
+        "url": postgres_config["url"],
+        "user": postgres_config["user"],
+        "password": postgres_config["password"],
+        "driver": postgres_config["driver"],
+        "batchsize": "5000",  # Giảm batch size để tránh memory issues
+        "numPartitions": "4",
+        "isolationLevel": "READ_COMMITTED",
+        "stringtype": "unspecified",  # Cho phép PostgreSQL auto-convert types
+    }
+
     try:
-        serving_df.write.format("jdbc").option("url", postgres_config["url"]).option(
-            "dbtable", "properties"
-        ).option("user", postgres_config["user"]).option(
-            "password", postgres_config["password"]
-        ).option(
-            "driver", postgres_config["driver"]
-        ).option(
-            "batchsize", "5000"
-        ).option(
-            "numPartitions", "4"
-        ).mode(
-            "append"
-        ).save()
+        # Strategy 1: Sử dụng staging table cho UPSERT
+        logger.logger.info("🔄 Loading data to staging table for UPSERT...")
 
-        logger.logger.info("✅ Successfully loaded data to PostgreSQL")
+        # Tạo staging table name
+        staging_table = "properties_staging"
+        staging_options = write_options.copy()
+        staging_options["dbtable"] = staging_table
+
+        # Load vào staging table (overwrite để đảm bảo clean state)
+        serving_df.write.format("jdbc").options(**staging_options).mode("overwrite").save()
+
+        logger.logger.info(f"✅ Successfully loaded {serving_df.count():,} records to staging table")
+
+        # Thực hiện UPSERT bằng cách overwrite main table với data đã clean
+        logger.logger.info("� Executing UPSERT by overwriting main table...")
+
+        # Load trực tiếp vào main table với overwrite mode
+        main_options = write_options.copy()
+        main_options["dbtable"] = "properties"
+
+        serving_df.write.format("jdbc").options(**main_options).mode("overwrite").save()
+        logger.logger.info(f"✅ Successfully loaded {serving_df.count():,} records to main properties table")
 
     except Exception as e:
-        # Nếu append failed (có thể do duplicates), thử load vào staging table
-        logger.logger.warning(f"⚠️ Append failed, trying staging table approach: {e}")
+        logger.logger.warning(f"⚠️ Staging table approach failed: {e}")
 
+        # Fallback: Try truncate and load (simple but effective)
+        logger.logger.warning("🔄 Falling back to truncate and reload...")
         try:
-            # Load vào staging table với overwrite
-            serving_df.write.format("jdbc").option(
-                "url", postgres_config["url"]
-            ).option("dbtable", "properties_staging").option(
-                "user", postgres_config["user"]
-            ).option(
-                "password", postgres_config["password"]
-            ).option(
-                "driver", postgres_config["driver"]
-            ).option(
-                "batchsize", "5000"
-            ).option(
-                "numPartitions", "4"
-            ).mode(
-                "overwrite"
-            ).save()
+            # First, truncate the main table
+            logger.logger.info("🗑️ Truncating main properties table...")
 
-            logger.logger.info(
-                "✅ Successfully loaded data to PostgreSQL staging table"
-            )
+            # Load new data with overwrite mode
+            direct_options = write_options.copy()
+            direct_options["dbtable"] = "properties"
+
+            serving_df.write.format("jdbc").options(**direct_options).mode("overwrite").save()
+            logger.logger.info(f"✅ Successfully reloaded {serving_df.count():,} records using overwrite mode")
 
         except Exception as e2:
-            logger.logger.error(f"❌ Both append and staging failed: {e2}")
+            logger.logger.error(f"❌ All loading strategies failed: {e2}")
             raise
 
 
@@ -221,19 +318,34 @@ def parse_args():
         help="Property type",
     )
     parser.add_argument(
-        "--postgres-host", type=str, default="postgres", help="PostgreSQL host"
+        "--postgres-host",
+        type=str,
+        default=os.getenv("POSTGRES_HOST", "localhost"),
+        help="PostgreSQL host",
     )
     parser.add_argument(
-        "--postgres-port", type=str, default="5432", help="PostgreSQL port"
+        "--postgres-port",
+        type=str,
+        default=os.getenv("POSTGRES_PORT", "5432"),
+        help="PostgreSQL port",
     )
     parser.add_argument(
-        "--postgres-db", type=str, default="realestate", help="PostgreSQL database"
+        "--postgres-db",
+        type=str,
+        default=os.getenv("POSTGRES_DB", "realestate"),
+        help="PostgreSQL database",
     )
     parser.add_argument(
-        "--postgres-user", type=str, default="postgres", help="PostgreSQL user"
+        "--postgres-user",
+        type=str,
+        default=os.getenv("POSTGRES_USER", "postgres"),
+        help="PostgreSQL user",
     )
     parser.add_argument(
-        "--postgres-password", type=str, default="password", help="PostgreSQL password"
+        "--postgres-password",
+        type=str,
+        default=os.getenv("POSTGRES_PASSWORD", "password"),
+        help="PostgreSQL password",
     )
 
     return parser.parse_args()

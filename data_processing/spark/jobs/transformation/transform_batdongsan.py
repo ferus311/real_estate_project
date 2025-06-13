@@ -293,7 +293,7 @@ def apply_batdongsan_comprehensive_mapping(df: DataFrame) -> DataFrame:
         )
         .otherwise(lit(UNKNOWN_TEXT)),
     ).withColumn(
-        "house_direction_id",
+        "house_direction_code",
         when(
             col("house_direction_text") == "Đông", lit(HOUSE_DIRECTION_MAPPING["Đông"])
         )
@@ -344,7 +344,7 @@ def apply_batdongsan_comprehensive_mapping(df: DataFrame) -> DataFrame:
         )
         .otherwise(lit(UNKNOWN_TEXT)),
     ).withColumn(
-        "legal_status_id",
+        "legal_status_code",
         when(
             col("legal_status_text") == "Đã có sổ",
             lit(LEGAL_STATUS_MAPPING["Đã có sổ"]),
@@ -400,7 +400,7 @@ def apply_batdongsan_comprehensive_mapping(df: DataFrame) -> DataFrame:
         )
         .otherwise(lit(UNKNOWN_TEXT)),
     ).withColumn(
-        "interior_id",
+        "interior_code",
         when(col("interior_text") == "Cao cấp", lit(INTERIOR_MAPPING["Cao cấp"]))
         .when(col("interior_text") == "Đầy đủ", lit(INTERIOR_MAPPING["Đầy đủ"]))
         .when(col("interior_text") == "Cơ bản", lit(INTERIOR_MAPPING["Cơ bản"]))

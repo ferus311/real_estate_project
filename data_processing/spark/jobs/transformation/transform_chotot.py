@@ -90,10 +90,10 @@ def map_chotot_to_standard_format(df: DataFrame) -> DataFrame:
                 else lit(None)
             ),
         ).withColumn(
-            "house_direction_id",
+            "house_direction_code",
             when(col("house_direction") == encoded_id, lit(encoded_id)).otherwise(
-                col("house_direction_id")
-                if "house_direction_id" in mapped_df.columns
+                col("house_direction_code")
+                if "house_direction_code" in mapped_df.columns
                 else lit(None)
             ),
         )
@@ -105,9 +105,9 @@ def map_chotot_to_standard_format(df: DataFrame) -> DataFrame:
             col("house_direction_text")
         ),
     ).withColumn(
-        "house_direction_id",
-        when(col("house_direction_id").isNull(), lit(UNKNOWN_ID)).otherwise(
-            col("house_direction_id")
+        "house_direction_code",
+        when(col("house_direction_code").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("house_direction_code")
         ),
     )
 
@@ -130,10 +130,10 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
                 else lit(None)
             ),
         ).withColumn(
-            "legal_status_id",
+            "legal_status_code",
             when(col("legal_status") == encoded_id, lit(encoded_id)).otherwise(
-                col("legal_status_id")
-                if "legal_status_id" in mapped_df.columns
+                col("legal_status_code")
+                if "legal_status_code" in mapped_df.columns
                 else lit(None)
             ),
         )
@@ -145,9 +145,9 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
             col("legal_status_text")
         ),
     ).withColumn(
-        "legal_status_id",
-        when(col("legal_status_id").isNull(), lit(UNKNOWN_ID)).otherwise(
-            col("legal_status_id")
+        "legal_status_code",
+        when(col("legal_status_code").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("legal_status_code")
         ),
     )
 
@@ -161,9 +161,9 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
                 else lit(None)
             ),
         ).withColumn(
-            "interior_id",
+            "interior_code",
             when(col("interior") == encoded_id, lit(encoded_id)).otherwise(
-                col("interior_id") if "interior_id" in mapped_df.columns else lit(None)
+                col("interior_code") if "interior_code" in mapped_df.columns else lit(None)
             ),
         )
 
@@ -174,9 +174,9 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
             col("interior_text")
         ),
     ).withColumn(
-        "interior_id",
-        when(col("interior_id").isNull(), lit(UNKNOWN_ID)).otherwise(
-            col("interior_id")
+        "interior_code",
+        when(col("interior_code").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("interior_code")
         ),
     )
 
@@ -190,10 +190,10 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
                 else lit(None)
             ),
         ).withColumn(
-            "house_type_id",
+            "house_type_code",
             when(col("house_type") == encoded_id, lit(encoded_id)).otherwise(
-                col("house_type_id")
-                if "house_type_id" in mapped_df.columns
+                col("house_type_code")
+                if "house_type_code" in mapped_df.columns
                 else lit(None)
             ),
         )
@@ -205,9 +205,9 @@ def complete_chotot_mapping(df: DataFrame) -> DataFrame:
             col("house_type_text")
         ),
     ).withColumn(
-        "house_type_id",
-        when(col("house_type_id").isNull(), lit(UNKNOWN_ID)).otherwise(
-            col("house_type_id")
+        "house_type_code",
+        when(col("house_type_code").isNull(), lit(UNKNOWN_ID)).otherwise(
+            col("house_type_code")
         ),
     )
 

@@ -31,7 +31,7 @@ dag = DAG(
 run_processing = DockerOperator(
     task_id="run_full_processing",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py --date 2025-06-10 --skip-load",
+    command=f"python /app/pipelines/daily_processing.py --date 2025-06-12 --load-only",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,
@@ -40,6 +40,12 @@ run_processing = DockerOperator(
         "SPARK_MASTER_URL": "spark://spark-master:7077",
         "CORE_CONF_fs_defaultFS": "hdfs://namenode:9000",
         "HDFS_NAMENODE_ADDRESS": "hdfs://namenode:9000",
+        # PostgreSQL connection settings
+        "POSTGRES_HOST": "db",  # Hostname trong webapp network
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "realestate",
+        "POSTGRES_USER": "postgres",
+        "POSTGRES_PASSWORD": "realestate123",
     },
     docker_url="unix://var/run/docker.sock",
     dag=dag,

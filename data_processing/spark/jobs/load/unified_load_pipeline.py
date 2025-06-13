@@ -18,6 +18,13 @@ from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
 
+# Import serving logic từ load_to_serving.py
+from jobs.load.load_to_serving import (
+    extract_from_gold,
+    transform_for_serving,
+    load_to_postgres,
+)
+
 
 def unified_load_pipeline(
     spark: SparkSession,
@@ -61,8 +68,10 @@ def unified_load_pipeline(
             load_to_delta_lake(spark, gold_df, property_type, logger)
 
         if "postgres" in load_targets or "both" in load_targets:
-            logger.logger.info("🔄 Loading to PostgreSQL...")
-            load_to_postgresql(spark, gold_df, postgres_config, logger)
+            logger.logger.info("🔄 Loading to PostgreSQL using serving logic...")
+            # Sử dụng serving transformation và loading logic từ load_to_serving.py
+            serving_df = transform_for_serving(gold_df, logger)
+            load_to_postgres(serving_df, postgres_config, logger)
 
         logger.logger.info("✅ Unified load pipeline completed!")
         logger.end_job()
@@ -75,20 +84,8 @@ def unified_load_pipeline(
 def extract_from_gold_layer(
     spark: SparkSession, input_date: str, property_type: str, logger
 ):
-    """Extract từ Gold layer - shared extraction logic"""
-
-    # gold_path = get_hdfs_path(
-    #     "/data/realestate/processed/gold/unified", property_type, input_date
-    # )
-    date_formatted = input_date.replace("-", "")
-    gold_path = f"/data/realestate/processed/gold/unified/{property_type}/{input_date.replace("-", "/")}/unified_{property_type}_{date_formatted}.parquet"
-
-    if not check_hdfs_path_exists(spark, gold_path):
-        raise FileNotFoundError(f"Gold data not found: {gold_path}")
-
-    df = spark.read.parquet(gold_path)
-    logger.logger.info(f"📊 Extracted {df.count():,} records from Gold layer")
-    return df
+    """Extract từ Gold layer - delegating to shared logic"""
+    return extract_from_gold(spark, input_date, property_type, logger)
 
 
 def load_to_delta_lake(
@@ -114,68 +111,6 @@ def load_to_delta_lake(
     logger.logger.info(f"✅ Loaded {delta_df.count():,} records to Delta Lake")
 
 
-def load_to_postgresql(
-    spark: SparkSession, gold_df: DataFrame, postgres_config: dict, logger
-):
-    """Load vào PostgreSQL (Serving purpose)"""
-
-    if postgres_config is None:
-        postgres_config = {
-            "url": "jdbc:postgresql://realestate-postgres:5432/realestate",
-            "user": "postgres",
-            "password": "password",
-            "driver": "org.postgresql.Driver",
-        }
-
-    # Transform cho PostgreSQL serving - theo schema thống nhất
-    serving_df = gold_df.select(
-        col("id").alias("property_id"),
-        col("title"),
-        col("price").cast("bigint"),
-        col("area").cast("real"),
-        col("bedroom").cast("int").alias("bedrooms"),  # Map bedroom -> bedrooms
-        col("bathroom").cast("int").alias("bathrooms"),  # Map bathroom -> bathrooms
-        col("province"),
-        col("district"),
-        col("location").alias("address"),  # Use location as address
-        col("latitude").cast("double"),
-        col("longitude").cast("double"),
-        col("source"),
-        col("url"),
-        lit(None).cast("string").alias("contact_name"),  # Null placeholder
-        lit(None).cast("string").alias("contact_phone"),  # Null placeholder
-        # Computed fields
-        when(col("area") > 0, col("price") / col("area"))
-        .otherwise(None)
-        .alias("price_per_m2"),
-        when(col("price") < 1000000000, "budget")
-        .when(col("price") < 5000000000, "mid-range")
-        .otherwise("luxury")
-        .alias("price_tier"),
-        current_timestamp().alias("updated_at"),
-    ).filter(
-        col("price").isNotNull()
-        & col("area").isNotNull()
-        & (col("price") > 0)
-        & (col("area") > 0)
-    )
-
-    # Load vào PostgreSQL
-    serving_df.write.format("jdbc").option("url", postgres_config["url"]).option(
-        "dbtable", "properties"
-    ).option("user", postgres_config["user"]).option(
-        "password", postgres_config["password"]
-    ).option(
-        "driver", postgres_config["driver"]
-    ).option(
-        "batchsize", "10000"
-    ).mode(
-        "append"
-    ).save()
-
-    logger.logger.info(f"✅ Loaded {serving_df.count():,} records to PostgreSQL")
-
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Unified Load Pipeline")
@@ -191,11 +126,23 @@ def parse_args():
         choices=["delta", "postgres", "both"],
         help="Load targets",
     )
-    parser.add_argument("--postgres-host", type=str, default="postgres")
-    parser.add_argument("--postgres-port", type=str, default="5432")
-    parser.add_argument("--postgres-db", type=str, default="realestate")
-    parser.add_argument("--postgres-user", type=str, default="postgres")
-    parser.add_argument("--postgres-password", type=str, default="password")
+    parser.add_argument(
+        "--postgres-host", type=str, default=os.getenv("POSTGRES_HOST", "localhost")
+    )
+    parser.add_argument(
+        "--postgres-port", type=str, default=os.getenv("POSTGRES_PORT", "5432")
+    )
+    parser.add_argument(
+        "--postgres-db", type=str, default=os.getenv("POSTGRES_DB", "realestate")
+    )
+    parser.add_argument(
+        "--postgres-user", type=str, default=os.getenv("POSTGRES_USER", "postgres")
+    )
+    parser.add_argument(
+        "--postgres-password",
+        type=str,
+        default=os.getenv("POSTGRES_PASSWORD", "password"),
+    )
 
     return parser.parse_args()
 

@@ -64,8 +64,15 @@ services:
             - hdfs_network
             - spark_network
         environment:
-            - SPARK_MASTER_URL=spark://spark-master:7077
-            - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+          - SPARK_MASTER_URL=spark://spark-master:7077
+          - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+
+          # Database Configuration for Real Estate Project
+          - POSTGRES_DB=realestate
+          - POSTGRES_USER=postgres
+          - POSTGRES_PASSWORD=realestate123
+          - POSTGRES_HOST=db 
+          - POSTGRES_PORT=5432
         volumes:
             - ../../data_processing/spark/jobs:/app/jobs
             - ../../data_processing/spark/common:/app/common

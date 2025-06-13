@@ -149,8 +149,16 @@ def run_load_stage(
 
     if load_targets is None:
         load_targets = [
-            "postgresql"
-        ]  # Default to PostgreSQL only (Delta Lake vô nghĩa)
+            "postgres"
+        ]  # Default to PostgreSQL only using serving layer logic
+
+    # Environment-driven PostgreSQL config
+    postgres_config = {
+        "url": f"jdbc:postgresql://{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'realestate')}",
+        "user": os.getenv("POSTGRES_USER", "postgres"),
+        "password": os.getenv("POSTGRES_PASSWORD", "password"),
+        "driver": "org.postgresql.Driver",
+    }
 
     try:
         start_time = datetime.now()
@@ -159,6 +167,7 @@ def run_load_stage(
             input_date=input_date,
             property_type=property_type,
             load_targets=load_targets,
+            postgres_config=postgres_config,  # Pass postgres config
         )
         duration = (datetime.now() - start_time).total_seconds()
 
