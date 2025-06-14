@@ -12,35 +12,39 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
 -- Provinces (63 tỉnh thành)
 CREATE TABLE provinces (
-    id INTEGER PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
     code VARCHAR(10) UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Districts
 CREATE TABLE districts (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     province_id INTEGER NOT NULL REFERENCES provinces(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    code VARCHAR(10),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, province_id)
 );
 
 -- Wards
 CREATE TABLE wards (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     district_id INTEGER NOT NULL REFERENCES districts(id),
-    prefix VARCHAR(20) DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    code VARCHAR(10),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, district_id)
 );
 
 -- Streets
 CREATE TABLE streets (
-    id INTEGER PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
-    district_id INTEGER NOT NULL REFERENCES districts(id),
-    prefix VARCHAR(20) DEFAULT '',
+    ward_id INTEGER REFERENCES wards(id),
+    district_id INTEGER REFERENCES districts(id),
+    province_id INTEGER REFERENCES provinces(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -148,7 +152,7 @@ CREATE TABLE properties (
     processing_timestamp TIMESTAMP, -- from Gold: processing_timestamp
 
     -- Processing metadata (from Gold)
-    data_quality_score DECIMAL(5, 2), -- from Gold: data_quality_score (supports values up to 999.99)
+    data_quality_score DECIMAL(3, 2), -- from Gold: data_quality_score
     processing_id VARCHAR(255), -- from Gold: processing_id
 
     -- Serving layer timestamps

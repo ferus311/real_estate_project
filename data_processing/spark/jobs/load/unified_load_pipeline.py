@@ -17,6 +17,7 @@ from common.utils.date_utils import get_date_format, get_hdfs_path
 from common.utils.hdfs_utils import check_hdfs_path_exists, ensure_hdfs_path
 from common.utils.logging_utils import SparkJobLogger
 from common.config.spark_config import create_spark_session
+from common.utils.duplicate_detection import apply_load_deduplication
 
 # Import serving logic từ load_to_serving.py
 from jobs.load.load_to_serving import (
@@ -58,6 +59,17 @@ def unified_load_pipeline(
     if input_date is None:
         input_date = get_date_format()
 
+    # Ensure postgres_config is available when needed
+    if postgres_config is None and (
+        "postgres" in load_targets or "both" in load_targets
+    ):
+        postgres_config = {
+            "url": f"jdbc:postgresql://{os.getenv('POSTGRES_HOST', 'db')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'realestate')}",
+            "user": os.getenv("POSTGRES_USER", "postgres"),
+            "password": os.getenv("POSTGRES_PASSWORD", "realestate123"),
+            "driver": "org.postgresql.Driver",
+        }
+
     try:
         # 1. Extract từ Gold layer
         gold_df = extract_from_gold_layer(spark, input_date, property_type, logger)
@@ -71,7 +83,21 @@ def unified_load_pipeline(
             logger.logger.info("🔄 Loading to PostgreSQL using serving logic...")
             # Sử dụng serving transformation và loading logic từ load_to_serving.py
             serving_df = transform_for_serving(gold_df, logger)
-            load_to_postgres(serving_df, postgres_config, logger)
+
+            # Apply deduplication với existing data
+            initial_count = serving_df.count()
+            logger.logger.info(
+                f"🔍 Applying deduplication to {initial_count:,} records..."
+            )
+
+            deduplicated_df = apply_load_deduplication(serving_df, postgres_config)
+            final_count = deduplicated_df.count()
+
+            logger.logger.info(
+                f"📊 Deduplication result: {final_count:,}/{initial_count:,} records"
+            )
+
+            load_to_postgres(deduplicated_df, postgres_config, logger)
 
         logger.logger.info("✅ Unified load pipeline completed!")
         logger.end_job()

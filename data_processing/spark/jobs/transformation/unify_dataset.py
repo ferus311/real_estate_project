@@ -53,6 +53,7 @@ from common.utils.data_quality_scoring import (
     add_quality_level,
 )
 from common.config.spark_config import create_spark_session
+from common.utils.duplicate_detection import apply_unify_deduplication
 
 
 def unify_property_data(
@@ -288,6 +289,26 @@ def unify_property_data(
 
         logger.logger.info("Hoàn thành tính điểm chất lượng thống nhất!")
 
+        # === Duplication Detection ===
+        logger.logger.info("🔍 Bắt đầu phát hiện và loại bỏ trùng lặp...")
+
+        # Log count trước khi deduplication
+        pre_dedup_count = unified_df.count()
+        logger.logger.info(f"📊 Records trước deduplication: {pre_dedup_count:,}")
+
+        # Apply comprehensive deduplication
+        unified_df = apply_unify_deduplication(unified_df)
+
+        # Log kết quả deduplication
+        post_dedup_count = unified_df.count()
+        duplicates_removed = pre_dedup_count - post_dedup_count
+        logger.logger.info(f"✅ Deduplication hoàn thành:")
+        logger.logger.info(f"   📤 Records sau deduplication: {post_dedup_count:,}")
+        logger.logger.info(f"   🗑️ Duplicates loại bỏ: {duplicates_removed:,}")
+        logger.logger.info(
+            f"   📉 Reduction rate: {duplicates_removed/pre_dedup_count*100:.1f}%"
+        )
+
         # === THỐNG KÊ TOÀN DIỆN SAU KHI UNIFY ===
         logger.logger.info("🎯 Tính thống kê toàn diện cho dữ liệu đã unify...")
 
@@ -449,19 +470,35 @@ def unify_property_data(
 
         logger.logger.info("✅ Hoàn thành thống kê toàn diện!")
 
+        # === FINAL SUMMARY ===
+        final_count = unified_df.count()
+        logger.logger.info(f"🏁 UNIFY PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.logger.info(f"📊 FINAL SUMMARY:")
+        logger.logger.info(f"   📥 Raw input records: {pre_dedup_count:,}")
+        logger.logger.info(f"   🔄 After deduplication: {final_count:,}")
+        logger.logger.info(
+            f"   📉 Total duplicates removed: {pre_dedup_count - final_count:,}"
+        )
+        logger.logger.info(
+            f"   ⚡ Processing efficiency: {final_count/pre_dedup_count*100:.1f}% data retained"
+        )
+
         # Không cần áp dụng lại schema vì đã chuẩn hóa DataFrames trước khi hợp nhất
         # Các cột đã được chuẩn hóa và sắp xếp theo thứ tự của schema thống nhất
 
         # Log thông tin sau khi hợp nhất
-        logger.log_dataframe_info(unified_df, "unified_data")
+        logger.log_dataframe_info(unified_df, "unified_data_final")
 
         # Ghi dữ liệu ra
         output_path = os.path.join(
             gold_path, f"unified_{property_type}_{input_date.replace('-', '')}.parquet"
         )
+        logger.logger.info(f"💾 Writing data to: {output_path}")
         unified_df.write.mode("overwrite").parquet(output_path)
 
-        logger.logger.info(f"Đã ghi {unified_df.count()} bản ghi vào {output_path}")
+        logger.logger.info(
+            f"✅ Successfully wrote {final_count:,} records to Gold layer"
+        )
         logger.end_job()
 
         return unified_df
