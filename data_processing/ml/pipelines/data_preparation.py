@@ -13,6 +13,7 @@ Architecture:
 Author: ML Team
 Date: June 2025
 """
+
 import os
 import sys
 import json
@@ -25,10 +26,12 @@ from pyspark.sql.functions import lit
 # Import common utilities
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.config.spark_config import create_optimized_ml_spark_session
+from common.utils.hdfs_utils import check_hdfs_path_exists
 
 # Import ML utilities
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from utils import DataCleaner, FeatureEngineer
+from utils.data_cleaner import DataCleaner
+from utils.feature_engineer import FeatureEngineer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -100,15 +103,23 @@ class MLDataPreprocessor:
 
             # Step 3: Feature engineering pipeline (delegated to FeatureEngineer)
             features_df = self.feature_engineer.create_all_features(clean_df)
-            logger.info(f"🔧 After feature engineering: {features_df.count():,} records")
+            logger.info(
+                f"🔧 After feature engineering: {features_df.count():,} records with {len(features_df.columns)} columns"
+            )
 
-            # Step 4: Final validation and feature selection
-            final_df = self._select_and_validate_features(features_df)
+            # Step 4: Validate we have exactly 16 ML features
+            validated_df = self._validate_final_features(features_df)
+            logger.info(
+                f"🔍 After validation: {validated_df.count():,} records with {len(validated_df.columns)} total columns"
+            )
+
+            # Step 5: Final feature selection and cleanup
+            final_df = self._select_and_validate_features(validated_df)
             logger.info(
                 f"✅ Final dataset: {final_df.count():,} records with {len(final_df.columns)} features"
             )
 
-            # Step 5: Save to feature store
+            # Step 6: Save to feature store
             self._save_to_feature_store(final_df, date, property_type)
 
             return final_df
@@ -118,48 +129,59 @@ class MLDataPreprocessor:
             raise
 
     def _get_training_columns(self) -> list:
-        """🎯 Get list of required columns for ML training"""
-        core_features = [
-            # Target variable
-            "price",
-            # Core numeric features
-            "area",
-            "latitude",
-            "longitude",
-            "price_per_m2",
-            # Property characteristics
-            "bedroom",
-            "bathroom",
-            "floor_count",
-            "width",
-            "length",
-            "living_size",
-            "facade_width",
-            "road_width",
-            # Categorical features (keep limited set)
-            "district",
-            "ward",
-            "house_direction",
-            "legal_status",
-            "interior",
-            "house_type",
-            "property_type",
-            # Quality features
-            "data_quality_score",
-            # ID for tracking
-            "id",
+        """🎯 Get list of required RAW columns for reading data (NOT final features)
+
+        This is the list of columns we need to READ from gold data.
+        Feature engineering will create additional features from these.
+        """
+
+        # These are the RAW columns we need to read from gold data
+        # Feature engineering will create additional features from these
+        raw_columns_needed = [
+            # TARGET VARIABLE
+            "price",  # Target for prediction
+            # CORE FEATURES (4)
+            "area",  # Essential - property size
+            "latitude",  # Location coordinates
+            "longitude",  # Location coordinates
+            # ROOM CHARACTERISTICS (3) - needed for property features
+            "bedroom",  # Number of bedrooms
+            "bathroom",  # Number of bathrooms
+            "floor_count",  # Number of floors
+            # HOUSE CHARACTERISTICS - ENCODED (3)
+            "house_direction_code",  # Direction (1-8 values)
+            "legal_status_code",  # Legal status (~6 values)
+            "interior_code",  # Interior condition (1-4 values)
+            # ADMINISTRATIVE HIERARCHY (3) - needed for population_density join
+            "province_id",  # Province level
+            "district_id",  # District level
+            "ward_id",  # Ward level (most granular)
+            # METADATA for tracking
+            "id",  # For tracking and debugging
         ]
-        return core_features
+
+        logger.info(f"🎯 Reading {len(raw_columns_needed)} RAW columns from gold data")
+        logger.info(f"   Target: price")
+        logger.info(f"   Core features (4): area, latitude, longitude, id")
+        logger.info(f"   Room features (3): bedroom, bathroom, floor_count")
+        logger.info(
+            f"   House features (3): house_direction_code, legal_status_code, interior_code"
+        )
+        logger.info(f"   Location features (3): province_id, district_id, ward_id")
+        logger.info(
+            f"   ✅ Feature engineering will create 3 property + 1 population features"
+        )
+        logger.info(
+            f"   📊 Final output: 16 features (13 raw + 3 property + 1 population - 1 id)"
+        )
+
+        return raw_columns_needed
 
     def _read_gold_data(self, date: str, property_type: str) -> DataFrame:
         """📖 Read gold layer data with sliding window approach (optimized with early column selection)"""
         logger.info(
             f"📖 Reading gold data with {self.config['lookback_days']}-day window"
         )
-
-        # Import HDFS utility to check file existence
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        from common.utils.hdfs_utils import check_hdfs_path_exists
 
         # Get required columns for training
         required_columns = self._get_training_columns()
@@ -233,8 +255,10 @@ class MLDataPreprocessor:
         logger.info(
             f"📊 Combined {combined_df.count():,} total records from {len(all_dfs)} days"
         )
+        logger.info(f"🎯 Raw data columns loaded: {len(required_columns)} columns")
+        logger.info(f"   Columns: {', '.join(sorted(required_columns))}")
         logger.info(
-            f"🎯 Early column selection optimization: Only {len(required_columns)} columns read from storage"
+            f"💡 Next: Data cleaning → Feature engineering (will create 16 ML features)"
         )
         return combined_df
 
@@ -250,6 +274,9 @@ class MLDataPreprocessor:
 
         # Feature selection based on importance
         df = self._select_top_features(df)
+
+        # Validate final output features
+        df = self._validate_final_features(df)
 
         return df
 
@@ -271,7 +298,92 @@ class MLDataPreprocessor:
         # This is a placeholder - implement feature selection if needed
         return df
 
-    def _save_to_feature_store(self, df: DataFrame, date: str, property_type: str) -> None:
+    def _validate_final_features(self, df: DataFrame) -> DataFrame:
+        """
+        🔍 Validate that we have exactly 16 features as expected
+
+        Expected final features (16 total):
+        - 12 core features (price, area, lat, lng, bedroom, bathroom, floor_count,
+          house_direction_code, legal_status_code, interior_code,
+          province_id, district_id, ward_id)
+        - 3 property features (total_rooms, area_per_room, bedroom_bathroom_ratio)
+        - 1 population feature (population_density)
+        - 1 metadata (id) - not counted in 16 features for ML
+        """
+        logger.info("🔍 Validating final feature set")
+
+        # Expected 16 ML features (excluding id)
+        expected_ml_features = [
+            # Target + Core (5)
+            "price",
+            "area",
+            "latitude",
+            "longitude",
+            # Room characteristics (3)
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            # House characteristics (3)
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            # Administrative (3)
+            "province_id",
+            "district_id",
+            "ward_id",
+            # Property features (3) - created by feature engineering
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+            # Population feature (1) - created by feature engineering
+            "population_density",
+        ]
+
+        # Check available features
+        available_features = df.columns
+        available_ml_features = [f for f in available_features if f != "id"]
+
+        missing_features = [
+            f for f in expected_ml_features if f not in available_features
+        ]
+        extra_features = [
+            f for f in available_ml_features if f not in expected_ml_features
+        ]
+
+        # Log validation results
+        logger.info(f"📊 Final dataset validation:")
+        logger.info(f"   Total columns: {len(available_features)} (including id)")
+        logger.info(f"   ML features: {len(available_ml_features)}/16 expected")
+
+        if missing_features:
+            logger.error(f"❌ Missing expected features: {missing_features}")
+            raise ValueError(f"Missing required ML features: {missing_features}")
+
+        if extra_features:
+            logger.warning(f"⚠️ Unexpected extra features: {extra_features}")
+            logger.info("🧹 Removing extra features to keep only the 16 expected")
+            # Keep only expected features + id
+            final_columns = expected_ml_features + ["id"]
+            df = df.select(*[col for col in final_columns if col in available_features])
+
+        if len(available_ml_features) == 16:
+            logger.info("✅ Perfect! Exactly 16 ML features as expected")
+        else:
+            logger.warning(
+                f"⚠️ Feature count mismatch: {len(available_ml_features)} vs 16 expected"
+            )
+
+        # Final feature list for reference
+        final_ml_features = [f for f in df.columns if f != "id"]
+        logger.info(f"🎯 Final 16 ML features:")
+        for i, feature in enumerate(sorted(final_ml_features), 1):
+            logger.info(f"   {i:2d}. {feature}")
+
+        return df
+
+    def _save_to_feature_store(
+        self, df: DataFrame, date: str, property_type: str
+    ) -> None:
         """💾 Save processed features to feature store"""
         logger.info("💾 Saving to feature store")
 
@@ -291,7 +403,7 @@ class MLDataPreprocessor:
                 "feature_count": len(df.columns),
                 "features": df.columns,
                 "created_at": datetime.now().isoformat(),
-                "config": self.config
+                "config": self.config,
             }
 
             metadata_path = f"{self.feature_store_path}/{property_type}/{date.replace('-', '/')}/metadata_{property_type}_{date_formatted}.json"

@@ -51,6 +51,11 @@ from pyspark.sql.functions import (
     abs as spark_abs,
     broadcast,
     udf,
+    md5,
+    concat_ws,
+    round,
+    row_number,
+    concat,
 )
 from pyspark.sql.types import (
     StructType,
@@ -120,8 +125,8 @@ class DataCleaner:
         logger.info("🔍 Data quality after type conversion:")
         self.debug_data_quality(df)
 
-        # Step 3: Remove duplicates
-        df = self.remove_duplicates(df)
+        # Step 3: Comprehensive duplicate removal
+        df = self.remove_duplicates_comprehensive(df)
 
         # Step 4: Handle missing values
         df = self.handle_missing_values(df, config)
@@ -159,33 +164,20 @@ class DataCleaner:
         initial_count = df.count()
         logger.info(f"📊 Starting validation with {initial_count:,} records")
 
-        # Remove records with critical missing values (with data type-aware filtering)
+        # Remove records with critical missing values
         critical_columns = ["price", "area", "latitude", "longitude"]
 
         for col_name in critical_columns:
             if col_name in df.columns:
+                # Remove null values for critical columns
                 before_count = df.count()
-                col_data_type = dict(df.dtypes)[col_name]
-
-                # Apply data type-aware filtering
-                if col_data_type == "string":
-                    df = df.filter(
-                        col(col_name).isNotNull()
-                        & (col(col_name) != "")
-                        & (col(col_name) != "null")
-                        & (col(col_name) != "NULL")
-                    )
-                else:
-                    if col_name == "area":
-                        df = df.filter(col(col_name).isNotNull() & (col(col_name) >= 0))
-                    else:
-                        df = df.filter(col(col_name).isNotNull() & (col(col_name) > 0))
-
+                df = df.filter(col(col_name).isNotNull())
                 after_count = df.count()
-                if before_count != after_count:
-                    logger.info(
-                        f"🔄 Removed {before_count - after_count:,} records with invalid {col_name}"
-                    )
+                removed = before_count - after_count
+                if removed > 0:
+                    logger.info(f"🔄 Removed {removed:,} records with null {col_name}")
+            else:
+                logger.warning(f"⚠️ Critical column {col_name} not in dataset")
 
         logger.info(f"📊 After basic validation: {df.count():,} records")
         return df
@@ -200,7 +192,7 @@ class DataCleaner:
             "area": DoubleType(),
             "latitude": DoubleType(),
             "longitude": DoubleType(),
-            "price_per_m2": DoubleType(),
+            # "price_per_m2": DoubleType(),  # REMOVED - causes data leakage
             "bedroom": IntegerType(),
             "bathroom": IntegerType(),
             "floor_count": IntegerType(),
@@ -297,27 +289,156 @@ class DataCleaner:
         logger.info("✅ Data type optimization completed")
         return df
 
-    def remove_duplicates(self, df: DataFrame) -> DataFrame:
-        """🔄 Remove duplicate records"""
-        logger.info("🔄 Removing duplicate records")
+    def remove_duplicates_comprehensive(self, df: DataFrame) -> DataFrame:
+        """🔄 Comprehensive duplicate removal with multiple strategies"""
+        logger.info("🔄 Starting comprehensive duplicate removal")
 
         initial_count = df.count()
+        logger.info(f"📊 Starting with {initial_count:,} records")
 
-        # Remove duplicates based on ID and date
-        if "id" in df.columns and "data_date" in df.columns:
-            df = df.dropDuplicates(["id", "data_date"])
-        elif "id" in df.columns:
-            df = df.dropDuplicates(["id"])
-        else:
-            logger.warning("⚠️ No ID column found for duplicate removal")
+        # Strategy 1: Remove exact ID duplicates
+        df = self._remove_id_duplicates(df)
+        after_id_count = df.count()
+        logger.info(f"📊 After ID deduplication: {after_id_count:,} records (-{initial_count - after_id_count:,})")
 
+        # Strategy 2: Remove similar property duplicates (using property fingerprint)
+        df = self._remove_property_duplicates(df)
+        after_property_count = df.count()
+        logger.info(f"📊 After property deduplication: {after_property_count:,} records (-{after_id_count - after_property_count:,})")
+
+        # Strategy 3: Remove location-based duplicates
+        df = self._remove_location_duplicates(df)
         final_count = df.count()
-        removed = initial_count - final_count
+        logger.info(f"📊 After location deduplication: {final_count:,} records (-{after_property_count - final_count:,})")
 
-        if removed > 0:
-            logger.info(f"🔄 Removed {removed:,} duplicate records")
+        total_removed = initial_count - final_count
+        removal_pct = (total_removed / initial_count * 100) if initial_count > 0 else 0
+        logger.info(f"✅ Comprehensive deduplication completed")
+        logger.info(f"📉 Total duplicates removed: {total_removed:,} ({removal_pct:.1f}%)")
+
+        return df
+
+    def _remove_id_duplicates(self, df: DataFrame) -> DataFrame:
+        """Remove exact ID duplicates with priority logic"""
+        if "id" not in df.columns:
+            logger.warning("⚠️ No ID column found for ID-based deduplication")
+            return df
+
+        # If we have data_date, keep the most recent record for each ID
+        if "data_date" in df.columns:
+            window_spec = Window.partitionBy("id").orderBy(col("data_date").desc())
+            df = df.withColumn("row_num", row_number().over(window_spec)) \
+                   .filter(col("row_num") == 1) \
+                   .drop("row_num")
         else:
-            logger.info("✅ No duplicates found")
+            # Simple ID deduplication
+            df = df.dropDuplicates(["id"])
+
+        return df
+
+    def _remove_property_duplicates(self, df: DataFrame) -> DataFrame:
+        """Remove duplicates based on property characteristics"""
+        logger.info("🏠 Removing property-based duplicates")
+
+        # Check required columns
+        required_cols = ["price", "area", "latitude", "longitude"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+
+        if missing_cols:
+            logger.warning(f"⚠️ Missing columns for property deduplication: {missing_cols}")
+            return df
+
+        # Create property fingerprint
+        df = df.withColumn(
+            "property_fingerprint",
+            md5(
+                concat_ws("|",
+                    # Location (rounded to reduce minor differences)
+                    round(col("latitude"), 4).cast("string"),
+                    round(col("longitude"), 4).cast("string"),
+
+                    # Property characteristics
+                    round(col("area")).cast("string"),
+                    round(col("price") / 1000000).cast("string"),  # Round to millions
+
+                    # Administrative (use -1 for missing _id fields)
+                    coalesce(col("province_id"), lit(-1)).cast("string"),
+                    coalesce(col("district_id"), lit(-1)).cast("string"),
+                    coalesce(col("ward_id"), lit(-1)).cast("string"),
+
+                    # Physical characteristics (should already be filled by handle_missing_values)
+                    coalesce(col("bedroom"), lit(1)).cast("string"),    # Fallback to smart default
+                    coalesce(col("bathroom"), lit(1)).cast("string"),   # Fallback to smart default
+                    coalesce(col("floor_count"), lit(1)).cast("string") # Fallback to smart default
+                )
+            )
+        )
+
+        # Remove duplicates keeping the best record
+        window_spec = Window.partitionBy("property_fingerprint").orderBy(
+            col("data_quality_score").desc_nulls_last(),
+            col("id").asc()  # Consistent tie-breaking
+        )
+
+        df = df.withColumn("row_num", row_number().over(window_spec)) \
+               .filter(col("row_num") == 1) \
+               .drop("row_num", "property_fingerprint")
+
+        return df
+
+    def _remove_location_duplicates(self, df: DataFrame) -> DataFrame:
+        """Remove duplicates that are very close geographically"""
+        logger.info("�️ Removing location-based duplicates")
+
+        if not all(col in df.columns for col in ["latitude", "longitude", "price", "area"]):
+            logger.warning("⚠️ Missing location columns for geographic deduplication")
+            return df
+
+        # Create location clusters (group nearby properties)
+        df = df.withColumn(
+            "location_cluster",
+            concat_ws("_",
+                # Group by rounded coordinates (approximately 100m precision)
+                round(col("latitude") * 1000).cast("string"),
+                round(col("longitude") * 1000).cast("string"),
+
+                # Add price range to avoid grouping very different properties
+                when(col("price") < 1000000000, "low")
+                .when(col("price") < 5000000000, "mid")
+                .otherwise("high")
+            )
+        )
+
+        # Within each cluster, look for very similar properties
+        window_spec = Window.partitionBy("location_cluster")
+
+        # Calculate cluster statistics
+        df = df.withColumn("cluster_size", count("*").over(window_spec))
+
+        # Only process clusters with multiple properties
+        df_clusters = df.filter(col("cluster_size") > 1)
+        df_singles = df.filter(col("cluster_size") == 1)
+
+        if df_clusters.count() > 0:
+            # For clustered properties, keep the one with best quality score
+            cluster_window = Window.partitionBy("location_cluster").orderBy(
+                col("data_quality_score").desc_nulls_last(),
+                col("id").asc()
+            )
+
+            df_clusters = df_clusters.withColumn("cluster_rank", row_number().over(cluster_window)) \
+                                   .filter(col("cluster_rank") == 1) \
+                                   .drop("cluster_rank")
+
+        # Combine back
+        if df_singles.count() > 0 and df_clusters.count() > 0:
+            df = df_singles.union(df_clusters)
+        elif df_singles.count() > 0:
+            df = df_singles
+        elif df_clusters.count() > 0:
+            df = df_clusters
+
+        df = df.drop("location_cluster", "cluster_size")
 
         return df
 
@@ -334,13 +455,13 @@ class DataCleaner:
 
         # Define protected columns that should NEVER be dropped (target variables, essential features)
         protected_columns = {
-            "price",
-            "price_per_m2",
-            "area",
-            "latitude",
-            "longitude",
-            "id",
+            "price",  # Target variable
+            "area",   # Essential feature
+            "latitude",  # Essential feature
+            "longitude", # Essential feature
+            "id",     # Metadata
         }
+        # Note: price_per_m2 REMOVED - it causes data leakage (calculated from target price)
 
         # Calculate missing percentages
         missing_stats = {}
@@ -384,7 +505,7 @@ class DataCleaner:
                 col_type = dict(df.dtypes)[col_name]
 
                 # Special handling for target variables - remove records instead of imputing
-                if col_name in ["price", "price_per_m2"]:
+                if col_name == "price":  # Only price is our target variable now
                     before_count = df.count()
                     df = df.filter(col(col_name).isNotNull())
                     after_count = df.count()
@@ -392,6 +513,13 @@ class DataCleaner:
                         logger.info(
                             f"🎯 Removed {before_count - after_count:,} records with missing target variable '{col_name}'"
                         )
+
+                # Handle price_per_m2 if it exists - remove it completely (data leakage risk)
+                elif col_name == "price_per_m2":
+                    logger.warning(f"🚨 Found price_per_m2 column - this causes data leakage and should not be used!")
+                    df = df.drop(col_name)
+                    logger.info(f"🗑️ Dropped price_per_m2 column to prevent data leakage")
+                    continue  # Skip to next column
 
                 # Special handling for essential location/property features
                 elif col_name in ["latitude", "longitude", "area"]:
@@ -405,12 +533,31 @@ class DataCleaner:
 
                 # Regular imputation for other columns
                 elif col_type in ["double", "float", "integer", "long"]:
-                    # Numeric: use median
-                    median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
-                    df = df.fillna({col_name: median_val})
-                    logger.info(
-                        f"🔢 Imputed {col_name} (numeric) with median: {median_val}"
-                    )
+                    # Special handling for ID/code fields - use -1 for missing
+                    if col_name.endswith('_id') or col_name.endswith('_code'):
+                        df = df.fillna({col_name: -1})
+                        logger.info(f"🏷️ Imputed {col_name} (ID/code field) with -1 (unknown)")
+
+                    # Special handling for room count fields - use median (smart default)
+                    elif col_name in ['bedroom', 'bathroom', 'floor_count']:
+                        # For room fields, use median which represents typical property
+                        median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                        if median_val is None or median_val <= 0:
+                            # Fallback smart defaults if median is invalid
+                            smart_defaults = {'bedroom': 2, 'bathroom': 1, 'floor_count': 1}
+                            default_val = smart_defaults.get(col_name, 1)
+                            df = df.fillna({col_name: default_val})
+                            logger.info(f"🏠 Imputed {col_name} (room field) with smart default: {default_val}")
+                        else:
+                            df = df.fillna({col_name: median_val})
+                            logger.info(f"🏠 Imputed {col_name} (room field) with median: {median_val}")
+
+                    # All other numeric fields - use median
+                    else:
+                        # Numeric: use median
+                        median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                        df = df.fillna({col_name: median_val})
+                        logger.info(f"🔢 Imputed {col_name} (numeric) with median: {median_val}")
                 else:
                     # String: use "Unknown"
                     df = df.fillna({col_name: "Unknown"})
@@ -522,7 +669,7 @@ class DataCleaner:
         """Remove outliers using IQR method"""
         logger.info("📊 Removing outliers using IQR method")
 
-        outlier_columns = ["price", "area", "price_per_m2"]
+        outlier_columns = ["price", "area"]  # Removed price_per_m2 to prevent data leakage
         multiplier = config.get("iqr_multiplier", 1.5)
         initial_count = df.count()
 
@@ -559,7 +706,7 @@ class DataCleaner:
         """Remove outliers using Z-score method"""
         logger.info("📊 Removing outliers using Z-score method")
 
-        outlier_columns = ["price", "area", "price_per_m2"]
+        outlier_columns = ["price", "area"]  # Removed price_per_m2 to prevent data leakage
         threshold = config.get("outlier_threshold", 3.0)
         initial_count = df.count()
 
@@ -686,7 +833,7 @@ class DataCleaner:
                 ]
 
             # Special analysis for important columns
-            if col_name in ["price", "price_per_m2", "area"]:
+            if col_name in ["price", "area"]:  # Removed price_per_m2 to prevent data leakage
                 if col_type == "string":
                     # Analyze string patterns for numeric columns that should be converted
                     logger.warning(
