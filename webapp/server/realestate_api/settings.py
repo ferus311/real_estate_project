@@ -46,6 +46,9 @@ INSTALLED_APPS = [
     "django_filters",
     # Local apps
     "properties",
+    "prediction",
+    "search",
+    "analytics",
 ]
 
 MIDDLEWARE = [

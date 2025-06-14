@@ -126,11 +126,11 @@ class ModelConfig:
             "xgboost": {
                 "class": xgb.XGBRegressor,
                 "params": {
-                    "n_estimators": 200,
+                    "n_estimators": 300,
                     "max_depth": 8,
-                    "learning_rate": 0.1,
-                    "subsample": 0.8,
-                    "colsample_bytree": 0.8,
+                    "learning_rate": 0.05,
+                    "subsample": 0.7,
+                    "colsample_bytree": 0.7,
                     "random_state": 42,
                     "n_jobs": 4,  # Reduced from -1 to control memory usage
                 },
@@ -138,11 +138,11 @@ class ModelConfig:
             "lightgbm": {
                 "class": lgb.LGBMRegressor,
                 "params": {
-                    "n_estimators": 200,
+                    "n_estimators": 300,
                     "max_depth": 8,
                     "learning_rate": 0.1,
-                    "subsample": 0.8,
-                    "colsample_bytree": 0.8,
+                    "subsample": 0.9,
+                    "colsample_bytree": 1.0,
                     "random_state": 42,
                     "n_jobs": 4,  # Reduced from -1 to control memory usage
                     "verbose": -1,

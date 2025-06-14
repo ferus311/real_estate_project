@@ -1,0 +1,584 @@
+{
+    "info": {
+        "name": "Real Estate API Collection",
+        "description": "Test collection cho Real Estate API với prediction, search và analytics",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Health & Info",
+            "item": [
+                {
+                    "name": "Health Check",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/health/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "health",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "API Info",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/info/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "info",
+                                ""
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Properties",
+            "item": [
+                {
+                    "name": "List Properties",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/properties/api/properties/?limit=10",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "properties",
+                                "api",
+                                "properties",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "10"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "List Provinces",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/properties/api/provinces/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "properties",
+                                "api",
+                                "provinces",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "List Districts",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/properties/api/districts/?province_id=79",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "properties",
+                                "api",
+                                "districts",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "province_id",
+                                    "value": "79"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Prediction",
+            "item": [
+                {
+                    "name": "Model Info",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/model-info/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "model-info",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Feature Info",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/feature-info/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "feature-info",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Linear Regression Prediction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"area\": 80.0,\n    \"latitude\": 10.762622,\n    \"longitude\": 106.660172,\n    \"bedroom\": 3,\n    \"bathroom\": 2,\n    \"floor_count\": 3,\n    \"house_direction_code\": 3,\n    \"legal_status_code\": 1,\n    \"interior_code\": 2,\n    \"province_id\": 79,\n    \"district_id\": 769,\n    \"ward_id\": 27000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/linear-regression/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "linear-regression",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "XGBoost Prediction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"area\": 80.0,\n    \"latitude\": 10.762622,\n    \"longitude\": 106.660172,\n    \"bedroom\": 3,\n    \"bathroom\": 2,\n    \"floor_count\": 3,\n    \"house_direction_code\": 3,\n    \"legal_status_code\": 1,\n    \"interior_code\": 2,\n    \"province_id\": 79,\n    \"district_id\": 769,\n    \"ward_id\": 27000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/xgboost/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "xgboost",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "LightGBM Prediction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"area\": 80.0,\n    \"latitude\": 10.762622,\n    \"longitude\": 106.660172,\n    \"bedroom\": 3,\n    \"bathroom\": 2,\n    \"floor_count\": 3,\n    \"house_direction_code\": 3,\n    \"legal_status_code\": 1,\n    \"interior_code\": 2,\n    \"province_id\": 79,\n    \"district_id\": 769,\n    \"ward_id\": 27000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/lightgbm/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "lightgbm",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Ensemble Prediction",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"area\": 80.0,\n    \"latitude\": 10.762622,\n    \"longitude\": 106.660172,\n    \"bedroom\": 3,\n    \"bathroom\": 2,\n    \"floor_count\": 3,\n    \"house_direction_code\": 3,\n    \"legal_status_code\": 1,\n    \"interior_code\": 2,\n    \"province_id\": 79,\n    \"district_id\": 769,\n    \"ward_id\": 27000\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/api/prediction/ensemble/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "prediction",
+                                "ensemble",
+                                ""
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Search",
+            "item": [
+                {
+                    "name": "Advanced Search (GET)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/search/advanced/?province=Hồ Chí Minh&price_min=2000000000&price_max=5000000000&bedroom_min=2",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "search",
+                                "advanced",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "province",
+                                    "value": "Hồ Chí Minh"
+                                },
+                                {
+                                    "key": "price_min",
+                                    "value": "2000000000"
+                                },
+                                {
+                                    "key": "price_max",
+                                    "value": "5000000000"
+                                },
+                                {
+                                    "key": "bedroom_min",
+                                    "value": "2"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Advanced Search (POST)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"province\": \"Hồ Chí Minh\",\n    \"district\": \"Quận 1\",\n    \"price_min\": 2000000000,\n    \"price_max\": 5000000000,\n    \"bedroom_min\": 2,\n    \"area_min\": 50,\n    \"sort_by\": \"price\",\n    \"page\": 1\n}"
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/api/search/advanced/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "search",
+                                "advanced",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Location Search",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/search/location/?province_id=79&district_id=769",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "search",
+                                "location",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "province_id",
+                                    "value": "79"
+                                },
+                                {
+                                    "key": "district_id",
+                                    "value": "769"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Radius Search",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/search/radius/?lat=10.762622&lng=106.660172&radius=5",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "search",
+                                "radius",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "lat",
+                                    "value": "10.762622"
+                                },
+                                {
+                                    "key": "lng",
+                                    "value": "106.660172"
+                                },
+                                {
+                                    "key": "radius",
+                                    "value": "5"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Search Suggestions",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/search/suggestions/?q=Quận 1",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "search",
+                                "suggestions",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "q",
+                                    "value": "Quận 1"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Analytics",
+            "item": [
+                {
+                    "name": "Market Overview",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/market-overview/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "market-overview",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Price Distribution",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/price-distribution/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "price-distribution",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Property Type Stats",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/property-type-stats/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "property-type-stats",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Location Stats",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/location-stats/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "location-stats",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Price Trends",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/price-trends/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "price-trends",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Area Distribution",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/area-distribution/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "area-distribution",
+                                ""
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Dashboard Summary",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/api/analytics/dashboard-summary/",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "api",
+                                "analytics",
+                                "dashboard-summary",
+                                ""
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8000",
+            "type": "string"
+        }
+    ]
+}

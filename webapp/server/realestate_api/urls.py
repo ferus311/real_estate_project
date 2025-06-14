@@ -17,8 +17,21 @@ Including another URLconf
 
 from django.contrib import admin
 from django.urls import path, include
+from . import views
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # API info and health check
+    path("api/info/", views.api_info, name="api_info"),
+    path("api/health/", views.health_check, name="health_check"),
+    # Core properties API
+    path("api/properties/", include("properties.urls")),
+    # Prediction APIs - 4 models as requested
+    path("api/prediction/", include("prediction.urls")),
+    # Search APIs
+    path("api/search/", include("search.urls")),
+    # Analytics APIs
+    path("api/analytics/", include("analytics.urls")),
+    # Legacy compatibility
     path("", include("properties.urls")),
 ]

@@ -2,14 +2,18 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Install system dependencies including PostgreSQL client
+# Install system dependencies including PostgreSQL client and Java
 RUN apt-get update && apt-get install -y \
     build-essential \
     libffi-dev \
     postgresql-client \
     libpq-dev \
+    default-jre \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME for PySpark
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 
 # Install Python dependencies
 COPY requirements.txt .

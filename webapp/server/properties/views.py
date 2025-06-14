@@ -2,8 +2,15 @@ from rest_framework import viewsets, filters, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, Avg
+from django.db.models import Q, Avg, Count, Min, Max, F
+from django.db.models.functions import Round
 import django_filters
+import joblib
+import pandas as pd
+import os
+from django.conf import settings
+from datetime import datetime, timedelta
+from collections import defaultdict
 
 from .models import Property, Province, District, Ward, Street
 from .serializers import (
@@ -15,6 +22,18 @@ from .serializers import (
     WardSerializer,
     StreetSerializer,
 )
+
+# Load ML model for price prediction
+try:
+    MODEL_PATH = os.path.join(
+        settings.BASE_DIR, "../../data_processing/ml/house_price_extended_model.joblib"
+    )
+    if os.path.exists(MODEL_PATH):
+        ML_MODEL = joblib.load(MODEL_PATH)
+    else:
+        ML_MODEL = None
+except:
+    ML_MODEL = None
 
 
 class PropertyFilter(django_filters.FilterSet):
@@ -148,6 +167,90 @@ class PropertyViewSet(viewsets.ReadOnlyModelViewSet):
         }
 
         return Response(stats)
+
+    @action(detail=False, methods=["get"])
+    def price_prediction(self, request):
+        """Dự đoán giá bất động sản"""
+        # Lấy các tham số đầu vào từ query params
+        # ...
+
+        # Chạy mô hình dự đoán
+        if ML_MODEL:
+            # Chuyển đổi dữ liệu đầu vào thành định dạng mà mô hình mong đợi
+            # ...
+
+            # Dự đoán
+            predicted_price = ML_MODEL.predict(input_data)
+
+            return Response({"predicted_price": predicted_price[0]})
+        else:
+            return Response({"error": "Mô hình không khả dụng"}, status=500)
+
+    @action(detail=False, methods=["get"])
+    def market_analytics(self, request):
+        """Phân tích thị trường bất động sản"""
+        queryset = self.get_queryset()
+
+        # Ví dụ: Tính toán số lượng, giá trung bình theo từng quận/huyện
+        analytics = (
+            queryset.values("district_id")
+            .annotate(
+                total_properties=Count("id"),
+                avg_price=Avg("price"),
+                min_price=Min("price"),
+                max_price=Max("price"),
+            )
+            .order_by("district_id")
+        )
+
+        return Response(analytics)
+
+    @action(detail=False, methods=["get"])
+    def recommendations(self, request):
+        """Gợi ý bất động sản tương tự"""
+        property_id = request.query_params.get("property_id")
+        if not property_id:
+            return Response({"error": "property_id is required"}, status=400)
+
+        try:
+            property_instance = Property.objects.get(id=property_id)
+        except Property.DoesNotExist:
+            return Response({"error": "Property not found"}, status=404)
+
+        # Gợi ý dựa trên cùng quận/huyện và khoảng giá
+        queryset = self.get_queryset().filter(district_id=property_instance.district_id)
+
+        # Loại trừ bất động sản hiện tại
+        queryset = queryset.exclude(id=property_instance.id)
+
+        # Lấy danh sách ID các bất động sản tương tự
+        recommended_property_ids = queryset.values_list("id", flat=True)[:5]
+
+        return Response(recommended_property_ids)
+
+    @action(detail=False, methods=["get"])
+    def comparison(self, request):
+        """So sánh bất động sản"""
+        property_ids = request.query_params.getlist("property_ids")
+        if not property_ids:
+            return Response({"error": "property_ids is required"}, status=400)
+
+        queryset = self.get_queryset().filter(id__in=property_ids)
+
+        # Chỉ lấy các trường cần thiết cho việc so sánh
+        queryset = queryset.values(
+            "id",
+            "title",
+            "price",
+            "area",
+            "bedroom",
+            "bathroom",
+            "district__name",
+            "ward__name",
+            "street__name",
+        )
+
+        return Response(queryset)
 
 
 class ProvinceViewSet(viewsets.ReadOnlyModelViewSet):

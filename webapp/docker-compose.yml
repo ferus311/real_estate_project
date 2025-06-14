@@ -41,7 +41,7 @@ services:
       - "8000:8000"
     volumes:
       - ./server:/app
-      - ../../data_processing/ml:/app/ml_models  # ML models từ HDFS
+      # - ../../data_processing/ml:/app/ml_models
     depends_on:
       db:
         condition: service_healthy
@@ -54,22 +54,22 @@ services:
              python manage.py runserver 0.0.0.0:8000"
 
   # React Frontend - Temporarily disabled due to npm network timeout
-  # frontend:
-  #   build:
-  #     context: ./client
-  #     dockerfile: Dockerfile
-  #   container_name: realestate_frontend
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - REACT_APP_API_URL=http://localhost:8000/api
-  #   volumes:
-  #     - ./client:/app
-  #     - /app/node_modules  # Avoid overwriting node_modules
-  #   depends_on:
-  #     - backend
-  #   networks:
-  #     - realestate_network
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: realestate_frontend
+    ports:
+      - "3000:80"
+    # environment:
+    #   - REACT_APP_API_URL=http://localhost:8000/api
+    volumes:
+      - ./client:/app
+      - /app/node_modules  # Avoid overwriting node_modules
+    depends_on:
+      - backend
+    networks:
+      - realestate_network
 
 volumes:
   postgres_data:
