@@ -29,6 +29,7 @@ Author: ML Team
 Date: June 2025
 """
 
+import os
 import logging
 from typing import Dict, List, Optional
 from pyspark.sql import SparkSession, DataFrame
@@ -219,16 +220,44 @@ class FeatureEngineer:
         logger.info("🌍 Adding population density feature from CSV")
 
         try:
-            # Path to population density CSV
-            csv_path = "/app/ml/utils/province_stats/province_population_density.csv"
+            # Path to population density CSV on HDFS
+            # This file should be uploaded to HDFS during deployment
+            hdfs_csv_path = "/data/realestate/static/province_population_density.csv"
 
-            # Read population density CSV
-            pop_density_df = self.spark.read.csv(
-                csv_path, header=True, inferSchema=True
-            ).select(
-                col("province_id").cast("double"),  # Ensure matching data type
-                col("population_density").cast("double"),
+            # Fallback to local path if HDFS not available
+            local_csv_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "province_stats",
+                "province_population_density.csv",
             )
+
+            # Try HDFS first, fallback to local
+            try:
+                # Read from HDFS
+                pop_density_df = self.spark.read.csv(
+                    hdfs_csv_path, header=True, inferSchema=True
+                ).select(
+                    col("province_id").cast("double"),
+                    col("population_density").cast("double"),
+                )
+                logger.info(f"📊 Loaded population density from HDFS: {hdfs_csv_path}")
+
+            except Exception as hdfs_error:
+                logger.warning(
+                    f"⚠️ HDFS path not found, trying local file: {hdfs_error}"
+                )
+
+                # Fallback to local file with file:// protocol
+                local_file_url = f"file://{local_csv_path}"
+                pop_density_df = self.spark.read.csv(
+                    local_file_url, header=True, inferSchema=True
+                ).select(
+                    col("province_id").cast("double"),
+                    col("population_density").cast("double"),
+                )
+                logger.info(
+                    f"📊 Loaded population density from local file: {local_file_url}"
+                )
 
             logger.info(
                 f"📊 Loaded population density data: {pop_density_df.count()} provinces"

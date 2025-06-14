@@ -63,7 +63,7 @@ def create_optimized_ml_spark_session(
         # Memory Management - Increased for better performance
         # "spark.driver.memory": "4g",
         "spark.executor.memory": "6g",
-        # "spark.executor.cores": "3",
+        "spark.executor.cores": "3",
         # "spark.driver.maxResultSize": "3g",
         # Adaptive Query Execution (AQE)
         "spark.sql.adaptive.enabled": "true",

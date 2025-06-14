@@ -137,8 +137,8 @@ class DataCleaner:
         # Step 6: Remove outliers
         df = self.remove_outliers(df, config)
 
-        # Step 7: Add data quality score
-        df = self.add_data_quality_score(df)
+        # Step 7: Final critical data validation (ensure no invalid data slipped through)
+        df = self._final_validation(df)
 
         # Final debug check
         final_debug = self.debug_data_quality(df)
@@ -158,28 +158,97 @@ class DataCleaner:
         return df
 
     def validate_basic_data(self, df: DataFrame) -> DataFrame:
-        """✅ Basic data validation and cleaning"""
+        """✅ Basic data validation and cleaning - Remove invalid/missing critical data"""
         logger.info("✅ Validating basic data quality")
 
         initial_count = df.count()
         logger.info(f"📊 Starting validation with {initial_count:,} records")
 
-        # Remove records with critical missing values
-        critical_columns = ["price", "area", "latitude", "longitude"]
+        # Define critical columns that CANNOT be null or invalid
+        critical_columns = {
+            "price": {
+                "min_value": 100_000_000,
+                "max_value": 100_000_000_000,
+            },  # 100M-100B VND
+            "area": {"min_value": 10, "max_value": 10000},  # 10-10,000 m²
+            "latitude": {"min_value": 8.0, "max_value": 24.0},  # Vietnam bounds
+            "longitude": {"min_value": 102.0, "max_value": 110.0},  # Vietnam bounds
+            "province_id": {
+                "min_value": 1,
+                "max_value": 96,
+            },  # Valid province IDs (no -1)
+        }
 
-        for col_name in critical_columns:
+        logger.info("🚨 STRICT VALIDATION: Removing records with invalid critical data")
+
+        for col_name, constraints in critical_columns.items():
             if col_name in df.columns:
-                # Remove null values for critical columns
                 before_count = df.count()
+
+                # Remove null values
                 df = df.filter(col(col_name).isNotNull())
+
+                # Remove invalid values based on constraints
+                if "min_value" in constraints and "max_value" in constraints:
+                    df = df.filter(
+                        (col(col_name) >= constraints["min_value"])
+                        & (col(col_name) <= constraints["max_value"])
+                    )
+
                 after_count = df.count()
                 removed = before_count - after_count
                 if removed > 0:
-                    logger.info(f"🔄 Removed {removed:,} records with null {col_name}")
+                    logger.info(
+                        f"�️ Removed {removed:,} records with invalid {col_name}"
+                    )
+                    logger.info(
+                        f"   Valid range: {constraints['min_value']} - {constraints['max_value']}"
+                    )
             else:
                 logger.warning(f"⚠️ Critical column {col_name} not in dataset")
 
-        logger.info(f"📊 After basic validation: {df.count():,} records")
+        # Additional specific validation for province_id = -1 (placeholder values)
+        if "province_id" in df.columns:
+            before_count = df.count()
+            df = df.filter(col("province_id") != -1)  # Remove placeholder province_id
+            after_count = df.count()
+            removed = before_count - after_count
+            if removed > 0:
+                logger.info(
+                    f"�️ Removed {removed:,} records with placeholder province_id = -1"
+                )
+
+        # Additional validation for other placeholder values
+        # NOTE: CHỈ province_id là bắt buộc, district_id và ward_id có thể là -1
+        # placeholder_columns = ["district_id", "ward_id"]
+        # for col_name in placeholder_columns:
+        #     if col_name in df.columns:
+        #         before_count = df.count()
+        #         df = df.filter(col(col_name) != -1)  # Remove placeholder values
+        #         after_count = df.count()
+        #         removed = before_count - after_count
+        #         if removed > 0:
+        #             logger.info(f"🗑️ Removed {removed:,} records with placeholder {col_name} = -1")
+
+        logger.info(
+            "💡 district_id và ward_id có thể có giá trị -1 (unknown) - không loại bỏ"
+        )
+
+        final_count = df.count()
+        total_removed = initial_count - final_count
+        logger.info(
+            f"📊 After STRICT validation: {final_count:,} records ({total_removed:,} removed)"
+        )
+
+        if final_count == 0:
+            logger.error("🚨 CRITICAL: No records remaining after validation!")
+            raise ValueError("All records were filtered out during validation!")
+
+        if total_removed > initial_count * 0.8:  # More than 80% removed
+            logger.warning(
+                f"⚠️ HIGH REMOVAL RATE: {total_removed/initial_count*100:.1f}% of data removed"
+            )
+
         return df
 
     def optimize_data_types(self, df: DataFrame) -> DataFrame:
@@ -299,22 +368,30 @@ class DataCleaner:
         # Strategy 1: Remove exact ID duplicates
         df = self._remove_id_duplicates(df)
         after_id_count = df.count()
-        logger.info(f"📊 After ID deduplication: {after_id_count:,} records (-{initial_count - after_id_count:,})")
+        logger.info(
+            f"📊 After ID deduplication: {after_id_count:,} records (-{initial_count - after_id_count:,})"
+        )
 
         # Strategy 2: Remove similar property duplicates (using property fingerprint)
         df = self._remove_property_duplicates(df)
         after_property_count = df.count()
-        logger.info(f"📊 After property deduplication: {after_property_count:,} records (-{after_id_count - after_property_count:,})")
+        logger.info(
+            f"📊 After property deduplication: {after_property_count:,} records (-{after_id_count - after_property_count:,})"
+        )
 
         # Strategy 3: Remove location-based duplicates
         df = self._remove_location_duplicates(df)
         final_count = df.count()
-        logger.info(f"📊 After location deduplication: {final_count:,} records (-{after_property_count - final_count:,})")
+        logger.info(
+            f"📊 After location deduplication: {final_count:,} records (-{after_property_count - final_count:,})"
+        )
 
         total_removed = initial_count - final_count
         removal_pct = (total_removed / initial_count * 100) if initial_count > 0 else 0
         logger.info(f"✅ Comprehensive deduplication completed")
-        logger.info(f"📉 Total duplicates removed: {total_removed:,} ({removal_pct:.1f}%)")
+        logger.info(
+            f"📉 Total duplicates removed: {total_removed:,} ({removal_pct:.1f}%)"
+        )
 
         return df
 
@@ -327,9 +404,11 @@ class DataCleaner:
         # If we have data_date, keep the most recent record for each ID
         if "data_date" in df.columns:
             window_spec = Window.partitionBy("id").orderBy(col("data_date").desc())
-            df = df.withColumn("row_num", row_number().over(window_spec)) \
-                   .filter(col("row_num") == 1) \
-                   .drop("row_num")
+            df = (
+                df.withColumn("row_num", row_number().over(window_spec))
+                .filter(col("row_num") == 1)
+                .drop("row_num")
+            )
         else:
             # Simple ID deduplication
             df = df.dropDuplicates(["id"])
@@ -345,44 +424,53 @@ class DataCleaner:
         missing_cols = [col for col in required_cols if col not in df.columns]
 
         if missing_cols:
-            logger.warning(f"⚠️ Missing columns for property deduplication: {missing_cols}")
+            logger.warning(
+                f"⚠️ Missing columns for property deduplication: {missing_cols}"
+            )
             return df
 
         # Create property fingerprint
         df = df.withColumn(
             "property_fingerprint",
             md5(
-                concat_ws("|",
+                concat_ws(
+                    "|",
                     # Location (rounded to reduce minor differences)
                     round(col("latitude"), 4).cast("string"),
                     round(col("longitude"), 4).cast("string"),
-
                     # Property characteristics
                     round(col("area")).cast("string"),
                     round(col("price") / 1000000).cast("string"),  # Round to millions
-
                     # Administrative (use -1 for missing _id fields)
                     coalesce(col("province_id"), lit(-1)).cast("string"),
                     coalesce(col("district_id"), lit(-1)).cast("string"),
                     coalesce(col("ward_id"), lit(-1)).cast("string"),
-
                     # Physical characteristics (should already be filled by handle_missing_values)
-                    coalesce(col("bedroom"), lit(1)).cast("string"),    # Fallback to smart default
-                    coalesce(col("bathroom"), lit(1)).cast("string"),   # Fallback to smart default
-                    coalesce(col("floor_count"), lit(1)).cast("string") # Fallback to smart default
+                    coalesce(col("bedroom"), lit(1)).cast(
+                        "string"
+                    ),  # Fallback to smart default
+                    coalesce(col("bathroom"), lit(1)).cast(
+                        "string"
+                    ),  # Fallback to smart default
+                    coalesce(col("floor_count"), lit(1)).cast(
+                        "string"
+                    ),  # Fallback to smart default
                 )
-            )
+            ),
         )
 
         # Remove duplicates keeping the best record
+        # NOTE: data_quality_score hasn't been created yet, so use alternative ranking
         window_spec = Window.partitionBy("property_fingerprint").orderBy(
-            col("data_quality_score").desc_nulls_last(),
-            col("id").asc()  # Consistent tie-breaking
+            # Primary: Records with more complete data (fewer nulls)
+            col("id").asc()  # Consistent tie-breaking (lower ID = older/better)
         )
 
-        df = df.withColumn("row_num", row_number().over(window_spec)) \
-               .filter(col("row_num") == 1) \
-               .drop("row_num", "property_fingerprint")
+        df = (
+            df.withColumn("row_num", row_number().over(window_spec))
+            .filter(col("row_num") == 1)
+            .drop("row_num", "property_fingerprint")
+        )
 
         return df
 
@@ -390,23 +478,25 @@ class DataCleaner:
         """Remove duplicates that are very close geographically"""
         logger.info("�️ Removing location-based duplicates")
 
-        if not all(col in df.columns for col in ["latitude", "longitude", "price", "area"]):
+        if not all(
+            col in df.columns for col in ["latitude", "longitude", "price", "area"]
+        ):
             logger.warning("⚠️ Missing location columns for geographic deduplication")
             return df
 
         # Create location clusters (group nearby properties)
         df = df.withColumn(
             "location_cluster",
-            concat_ws("_",
+            concat_ws(
+                "_",
                 # Group by rounded coordinates (approximately 100m precision)
-                round(col("latitude") * 1000).cast("string"),
-                round(col("longitude") * 1000).cast("string"),
-
+                round(col("latitude") * 10000).cast("string"),
+                round(col("longitude") * 10000).cast("string"),
                 # Add price range to avoid grouping very different properties
                 when(col("price") < 1000000000, "low")
                 .when(col("price") < 5000000000, "mid")
-                .otherwise("high")
-            )
+                .otherwise("high"),
+            ),
         )
 
         # Within each cluster, look for very similar properties
@@ -420,15 +510,19 @@ class DataCleaner:
         df_singles = df.filter(col("cluster_size") == 1)
 
         if df_clusters.count() > 0:
-            # For clustered properties, keep the one with best quality score
+            # For clustered properties, keep the one with best data completeness
+            # NOTE: data_quality_score hasn't been created yet, so use alternative ranking
             cluster_window = Window.partitionBy("location_cluster").orderBy(
-                col("data_quality_score").desc_nulls_last(),
-                col("id").asc()
+                col("id").asc()  # Consistent tie-breaking (lower ID = older/better)
             )
 
-            df_clusters = df_clusters.withColumn("cluster_rank", row_number().over(cluster_window)) \
-                                   .filter(col("cluster_rank") == 1) \
-                                   .drop("cluster_rank")
+            df_clusters = (
+                df_clusters.withColumn(
+                    "cluster_rank", row_number().over(cluster_window)
+                )
+                .filter(col("cluster_rank") == 1)
+                .drop("cluster_rank")
+            )
 
         # Combine back
         if df_singles.count() > 0 and df_clusters.count() > 0:
@@ -451,15 +545,16 @@ class DataCleaner:
             logger.warning("⚠️ No records to process for missing values")
             return df
 
-        missing_threshold = config.get("missing_threshold", 0.3)
+        missing_threshold = config.get("missing_threshold", 0.45)
 
         # Define protected columns that should NEVER be dropped (target variables, essential features)
         protected_columns = {
             "price",  # Target variable
-            "area",   # Essential feature
+            "area",  # Essential feature
             "latitude",  # Essential feature
-            "longitude", # Essential feature
-            "id",     # Metadata
+            "longitude",  # Essential feature
+            "province_id",  # Essential location feature
+            "id",  # Metadata
         }
         # Note: price_per_m2 REMOVED - it causes data leakage (calculated from target price)
 
@@ -476,17 +571,17 @@ class DataCleaner:
                 logger.info(f"📊 {col_name}: {missing_pct:.1%} missing {status}")
 
         # Drop columns with too many missing values (but protect target variables and essential columns)
-        columns_to_drop = [
-            col_name
-            for col_name, pct in missing_stats.items()
-            if pct > missing_threshold and col_name not in protected_columns
-        ]
+        # columns_to_drop = [
+        #     col_name
+        #     for col_name, pct in missing_stats.items()
+        #     if pct > missing_threshold and col_name not in protected_columns
+        # ]
 
-        if columns_to_drop:
-            logger.info(
-                f"🗑️ Dropping columns with >{missing_threshold*100}% missing: {columns_to_drop}"
-            )
-            df = df.drop(*columns_to_drop)
+        # if columns_to_drop:
+        #     logger.info(
+        #         f"🗑️ Dropping columns with >{missing_threshold*100}% missing: {columns_to_drop}"
+        #     )
+        #     df = df.drop(*columns_to_drop)
 
         # Log if any protected columns have high missing values (but don't drop them)
         high_missing_protected = [
@@ -516,12 +611,26 @@ class DataCleaner:
 
                 # Handle price_per_m2 if it exists - remove it completely (data leakage risk)
                 elif col_name == "price_per_m2":
-                    logger.warning(f"🚨 Found price_per_m2 column - this causes data leakage and should not be used!")
+                    logger.warning(
+                        f"🚨 Found price_per_m2 column - this causes data leakage and should not be used!"
+                    )
                     df = df.drop(col_name)
-                    logger.info(f"🗑️ Dropped price_per_m2 column to prevent data leakage")
+                    logger.info(
+                        f"🗑️ Dropped price_per_m2 column to prevent data leakage"
+                    )
                     continue  # Skip to next column
 
                 # Special handling for essential location/property features
+                elif col_name == "province_id":
+                    # Province ID is critical - remove records with missing/invalid values instead of imputing
+                    before_count = df.count()
+                    df = df.filter(col(col_name).isNotNull() & (col(col_name) != -1))
+                    after_count = df.count()
+                    if before_count != after_count:
+                        logger.info(
+                            f"🏛️ Removed {before_count - after_count:,} records with missing/invalid province_id"
+                        )
+
                 elif col_name in ["latitude", "longitude", "area"]:
                     if col_type in ["double", "float", "integer", "long"]:
                         # For essential features, use median imputation
@@ -533,31 +642,45 @@ class DataCleaner:
 
                 # Regular imputation for other columns
                 elif col_type in ["double", "float", "integer", "long"]:
-                    # Special handling for ID/code fields - use -1 for missing
-                    if col_name.endswith('_id') or col_name.endswith('_code'):
+                    # Special handling for ID/code fields - use -1 for missing (except critical province_id)
+                    if (
+                        col_name.endswith("_id") or col_name.endswith("_code")
+                    ) and col_name != "province_id":
                         df = df.fillna({col_name: -1})
-                        logger.info(f"🏷️ Imputed {col_name} (ID/code field) with -1 (unknown)")
+                        logger.info(
+                            f"🏷️ Imputed {col_name} (ID/code field) with -1 (unknown)"
+                        )
 
                     # Special handling for room count fields - use median (smart default)
-                    elif col_name in ['bedroom', 'bathroom', 'floor_count']:
+                    elif col_name in ["bedroom", "bathroom", "floor_count"]:
                         # For room fields, use median which represents typical property
                         median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
                         if median_val is None or median_val <= 0:
                             # Fallback smart defaults if median is invalid
-                            smart_defaults = {'bedroom': 2, 'bathroom': 1, 'floor_count': 1}
+                            smart_defaults = {
+                                "bedroom": 2,
+                                "bathroom": 1,
+                                "floor_count": 1,
+                            }
                             default_val = smart_defaults.get(col_name, 1)
                             df = df.fillna({col_name: default_val})
-                            logger.info(f"🏠 Imputed {col_name} (room field) with smart default: {default_val}")
+                            logger.info(
+                                f"🏠 Imputed {col_name} (room field) with smart default: {default_val}"
+                            )
                         else:
                             df = df.fillna({col_name: median_val})
-                            logger.info(f"🏠 Imputed {col_name} (room field) with median: {median_val}")
+                            logger.info(
+                                f"🏠 Imputed {col_name} (room field) with median: {median_val}"
+                            )
 
                     # All other numeric fields - use median
                     else:
                         # Numeric: use median
                         median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
                         df = df.fillna({col_name: median_val})
-                        logger.info(f"🔢 Imputed {col_name} (numeric) with median: {median_val}")
+                        logger.info(
+                            f"🔢 Imputed {col_name} (numeric) with median: {median_val}"
+                        )
                 else:
                     # String: use "Unknown"
                     df = df.fillna({col_name: "Unknown"})
@@ -669,7 +792,10 @@ class DataCleaner:
         """Remove outliers using IQR method"""
         logger.info("📊 Removing outliers using IQR method")
 
-        outlier_columns = ["price", "area"]  # Removed price_per_m2 to prevent data leakage
+        outlier_columns = [
+            "price",
+            "area",
+        ]  # Removed price_per_m2 to prevent data leakage
         multiplier = config.get("iqr_multiplier", 1.5)
         initial_count = df.count()
 
@@ -706,7 +832,10 @@ class DataCleaner:
         """Remove outliers using Z-score method"""
         logger.info("📊 Removing outliers using Z-score method")
 
-        outlier_columns = ["price", "area"]  # Removed price_per_m2 to prevent data leakage
+        outlier_columns = [
+            "price",
+            "area",
+        ]  # Removed price_per_m2 to prevent data leakage
         threshold = config.get("outlier_threshold", 3.0)
         initial_count = df.count()
 
@@ -833,7 +962,10 @@ class DataCleaner:
                 ]
 
             # Special analysis for important columns
-            if col_name in ["price", "area"]:  # Removed price_per_m2 to prevent data leakage
+            if col_name in [
+                "price",
+                "area",
+            ]:  # Removed price_per_m2 to prevent data leakage
                 if col_type == "string":
                     # Analyze string patterns for numeric columns that should be converted
                     logger.warning(
@@ -876,3 +1008,63 @@ class DataCleaner:
                 logger.warning(f"   - {issue['column']}: {issue['issue']}")
 
         return debug_info
+
+    def _final_validation(self, df: DataFrame) -> DataFrame:
+        """🔍 Final validation to ensure no invalid critical data remains"""
+        logger.info("🔍 Final validation - ensuring critical data integrity")
+
+        initial_count = df.count()
+
+        # Critical columns that must be valid (CHỈ 5 trường quan trọng nhất)
+        # NOTE: district_id và ward_id KHÔNG nằm trong danh sách này - có thể là -1
+        validations = [
+            (
+                "price",
+                lambda x: (col(x).isNotNull())
+                & (col(x) >= 100_000_000)
+                & (col(x) <= 100_000_000_000),
+            ),
+            (
+                "area",
+                lambda x: (col(x).isNotNull()) & (col(x) >= 10) & (col(x) <= 10000),
+            ),
+            (
+                "latitude",
+                lambda x: (col(x).isNotNull()) & (col(x) >= 8.0) & (col(x) <= 24.0),
+            ),
+            (
+                "longitude",
+                lambda x: (col(x).isNotNull()) & (col(x) >= 102.0) & (col(x) <= 110.0),
+            ),
+            (
+                "province_id",
+                lambda x: (col(x).isNotNull())
+                & (col(x) >= 1)
+                & (col(x) <= 96)
+                & (col(x) != -1),
+            ),
+        ]
+
+        # Apply all validations
+        for col_name, validation_func in validations:
+            if col_name in df.columns:
+                before_count = df.count()
+                df = df.filter(validation_func(col_name))
+                after_count = df.count()
+                removed = before_count - after_count
+                if removed > 0:
+                    logger.warning(
+                        f"🚨 Final validation removed {removed:,} invalid {col_name} records"
+                    )
+
+        final_count = df.count()
+        total_removed = initial_count - final_count
+
+        if total_removed > 0:
+            logger.info(
+                f"🔍 Final validation: {final_count:,} records remaining ({total_removed:,} removed)"
+            )
+        else:
+            logger.info("✅ Final validation: All records passed critical data checks")
+
+        return df

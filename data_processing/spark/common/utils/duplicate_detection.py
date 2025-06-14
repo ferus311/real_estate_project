@@ -725,7 +725,7 @@ def load_existing_data_window(postgres_config: Dict, days: int = 30) -> DataFram
             created_at, updated_at
         FROM properties
         WHERE updated_at >= NOW() - INTERVAL '{days} days'
-        LIMIT 100000) as existing_data
+        LIMIT 200000) as existing_data
         """
 
         existing_df = (

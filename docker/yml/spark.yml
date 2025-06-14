@@ -37,9 +37,10 @@ services:
             - SPARK_MODE=worker
             - SPARK_MASTER_URL=spark://spark-master:7077
             - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-        command: bash -c "pip install pandas && /opt/bitnami/scripts/spark/run.sh"
+        # command: bash -c "pip install pandas && /opt/bitnami/scripts/spark/run.sh"
         depends_on:
             - spark-master
+        restart: always
 
     jupyter:
         build:
@@ -71,7 +72,7 @@ services:
           - POSTGRES_DB=realestate
           - POSTGRES_USER=postgres
           - POSTGRES_PASSWORD=realestate123
-          - POSTGRES_HOST=db 
+          - POSTGRES_HOST=db
           - POSTGRES_PORT=5432
         volumes:
             - ../../data_processing/spark/jobs:/app/jobs

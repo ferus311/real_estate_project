@@ -5,6 +5,16 @@
 This module focuses exclusively on model training, evaluation, and deployment.
 Data preparation is handled by the unified data_preparation pipeline.
 
+🎯 IMPORTANT: Feature Scaling
+============================
+All features are standardized using StandardScaler (mean=0, std=1) before training.
+This is crucial for:
+- Linear models (LinearRegression, etc.)
+- Distance-based algorithms
+- Neural networks
+- Gradient descent optimization
+- Preventing features with large scales (e.g., price, area) from dominating
+
 Features:
 - 🤖 Multiple model architectures: Spark ML, XGBoost, LightGBM, CatBoost
 - 🎯 Automated hyperparameter tuning
@@ -12,10 +22,11 @@ Features:
 - 🔄 Incremental learning for daily updates
 - 📈 Model monitoring and drift detection
 - 💾 Production-ready model versioning
+- 🎯 Feature standardization for optimal performance
 
 Author: ML Team
 Date: June 2025
-Version: 3.0 - Clean Architecture
+Version: 3.0 - Clean Architecture with Feature Scaling
 """
 
 import sys
@@ -171,176 +182,116 @@ class MLTrainer:
         return create_optimized_ml_spark_session("ML_Training")
 
     def read_ml_features(
-        self, date: str, property_type: str = "house", lookback_days: int = 30
+        self, date: str, property_type: str = "house"
     ) -> Tuple[Any, Dict]:
-        """📖 Read ML features from feature store with sliding window approach"""
+        """📖 Read ML features from feature store - using latest available file only"""
         from datetime import datetime, timedelta
 
-        # Calculate date range (30 days sliding window)
-        end_date = datetime.strptime(date, "%Y-%m-%d")
-        start_date = end_date - timedelta(days=lookback_days - 1)
-
         self.logger.logger.info(
-            f"📖 Reading ML features with {lookback_days}-day sliding window"
+            f"📖 Reading ML features for property type '{property_type}'"
         )
-        self.logger.logger.info(
-            f"📅 Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
-        )
+        self.logger.logger.info(f"📅 Requested date: {date}")
 
-        # Collect available feature paths
-        available_paths = []
-        current_date = start_date
+        # First, try to find the exact date requested
+        requested_date = datetime.strptime(date, "%Y-%m-%d")
+        date_formatted = requested_date.strftime("%Y%m%d")
+        date_path = requested_date.strftime("%Y/%m/%d")
 
-        while current_date <= end_date:
-            date_str = current_date.strftime("%Y-%m-%d")
-            date_formatted = date_str.replace("-", "")
+        exact_feature_path = f"/data/realestate/processed/ml/feature_store/{property_type}/{date_path}/features_{property_type}_{date_formatted}.parquet"
 
-            # Build correct feature path based on data_preparation.py structure
-            feature_path = f"/data/realestate/processed/ml/feature_store/{property_type}/{date_str.replace('-', '/')}/features_{property_type}_{date_formatted}.parquet"
+        latest_path = None
+        latest_date = None
 
-            if check_hdfs_path_exists(self.spark, feature_path):
-                available_paths.append(feature_path)
-
-            current_date += timedelta(days=1)
-
-        if not available_paths:
-            self.logger.logger.warning(
-                f"⚠️ No ML features found in requested date range {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
-            )
+        if check_hdfs_path_exists(self.spark, exact_feature_path):
+            latest_path = exact_feature_path
+            latest_date = requested_date
+            self.logger.logger.info(f"✅ Found exact date feature file: {date}")
+        else:
             self.logger.logger.info(
-                "🔍 Searching for most recent available training data..."
+                f"⚠️ Exact date {date} not found, searching for latest available..."
             )
 
-            # Fallback: Find most recent available features
-            available_paths = self._find_most_recent_features(
-                property_type, lookback_days
+            # Search for the most recent available feature file
+            latest_path, latest_date = self._find_latest_available_features(
+                property_type, requested_date
             )
 
-            if not available_paths:
+            if not latest_path:
                 raise FileNotFoundError(
-                    f"❌ No ML features found in requested date range {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} "
-                    f"and no fallback training data available for property type '{property_type}'"
+                    f"❌ No ML features found for property type '{property_type}' "
+                    f"near requested date {date}"
                 )
 
-        self.logger.logger.info(f"📊 Found {len(available_paths)} days of feature data")
+        self.logger.logger.info(
+            f"📊 Using feature data from: {latest_date.strftime('%Y-%m-%d')}"
+        )
 
-        # Log whether we're using requested date range or fallback data
-        if len(available_paths) > 0:
-            # Check if this is fallback data by examining the paths
-            path_dates = []
-            for path in available_paths:
-                try:
-                    # Extract date from path like "/data/realestate/processed/ml/feature_store/house/2024/01/01/features_house_20240101.parquet"
-                    path_parts = path.split("/")
-                    year = path_parts[-4]
-                    month = path_parts[-3]
-                    day = path_parts[-2]
-                    date_str = f"{year}-{month}-{day}"
-                    path_dates.append(datetime.strptime(date_str, "%Y-%m-%d"))
-                except:
-                    continue
-
-            if path_dates:
-                actual_start = min(path_dates).strftime("%Y-%m-%d")
-                actual_end = max(path_dates).strftime("%Y-%m-%d")
-
-                # Check if we're using different dates than requested
-                requested_range = f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
-                actual_range = f"{actual_start} to {actual_end}"
-
-                if actual_range != requested_range:
-                    self.logger.logger.info(
-                        f"📅 Using fallback training data: {actual_range}"
-                    )
-                    self.logger.logger.info(f"   (Requested: {requested_range})")
-                else:
-                    self.logger.logger.info(
-                        f"📅 Using requested date range: {actual_range}"
-                    )
-
-        # Read and union all available feature files
-        dfs = []
-        for path in available_paths:
-            df_day = self.spark.read.option("mergeSchema", "false").parquet(path)
-            dfs.append(df_day)
-
-        # Union all DataFrames
-        df = dfs[0]
-        for df_day in dfs[1:]:
-            df = df.union(df_day)
+        # Read the single latest feature file
+        df = self.spark.read.option("mergeSchema", "false").parquet(latest_path)
 
         # Optimize partitioning and cache
         df = df.repartition(self.spark.sparkContext.defaultParallelism).cache()
 
-        # Read metadata efficiently - try from the latest available date
+        # Read metadata from the latest feature file
         metadata = {}
         metadata_loaded = False
 
-        # Try to read metadata from available dates (latest first)
-        for path in reversed(available_paths):
-            try:
-                # Extract date from path like "/data/realestate/processed/ml/feature_store/house/2024/01/01/features_house_20240101.parquet"
-                path_parts = path.split("/")
-                year = path_parts[-4]
-                month = path_parts[-3]
-                day = path_parts[-2]
-                date_str = f"{year}-{month}-{day}"
-                date_formatted = date_str.replace("-", "")
+        try:
+            # Extract date info from latest_path
+            path_parts = latest_path.split("/")
+            year = path_parts[-4]
+            month = path_parts[-3]
+            day = path_parts[-2]
+            date_str = f"{year}-{month}-{day}"
+            date_formatted = date_str.replace("-", "")
 
-                metadata_path = f"/data/realestate/processed/ml/feature_store/{property_type}/{year}/{month}/{day}/metadata_{property_type}_{date_formatted}.json"
+            metadata_path = f"/data/realestate/processed/ml/feature_store/{property_type}/{year}/{month}/{day}/metadata_{property_type}_{date_formatted}.json"
 
-                if check_hdfs_path_exists(self.spark, metadata_path):
-                    metadata_df = self.spark.read.json(metadata_path)
-                    metadata_row = metadata_df.collect()[0]
+            if check_hdfs_path_exists(self.spark, metadata_path):
+                metadata_df = self.spark.read.json(metadata_path)
+                metadata_row = metadata_df.collect()[0]
 
-                    # Handle both nested and flat JSON structures
-                    if hasattr(metadata_row, "metadata"):
-                        metadata = json.loads(metadata_row.metadata)
-                    else:
-                        metadata = metadata_row.asDict()
+                # Handle both nested and flat JSON structures
+                if hasattr(metadata_row, "metadata"):
+                    metadata = json.loads(metadata_row.metadata)
+                else:
+                    metadata = metadata_row.asDict()
 
-                    self.logger.logger.info(
-                        f"📊 Feature metadata loaded from {date_str}:"
-                    )
-                    self.logger.logger.info(
-                        f"   - Total features: {metadata.get('total_features', 'Unknown')}"
-                    )
+                self.logger.logger.info(f"📊 Feature metadata loaded from {date_str}:")
+                self.logger.logger.info(
+                    f"   - Total features: {metadata.get('total_features', 'Unknown')}"
+                )
 
-                    # Update total records to reflect combined dataset
-                    actual_count = df.count()
-                    metadata["total_records"] = actual_count
-                    metadata["sliding_window_days"] = lookback_days
-                    metadata["date_range"] = (
-                        f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
-                    )
+                # Update total records to reflect the dataset
+                actual_count = df.count()
+                metadata["total_records"] = actual_count
+                metadata["data_source_date"] = latest_date.strftime("%Y-%m-%d")
+                metadata["data_mode"] = "latest_single_file"
 
-                    self.logger.logger.info(
-                        f"   - Total records (sliding window): {actual_count:,}"
-                    )
-                    self.logger.logger.info(
-                        f"   - Date range: {metadata['date_range']}"
-                    )
-                    self.logger.logger.info(
-                        f"   - Feature engineering version: {metadata.get('feature_engineering_version', 'v1.0')}"
-                    )
+                self.logger.logger.info(f"   - Total records: {actual_count:,}")
+                self.logger.logger.info(
+                    f"   - Data source date: {metadata['data_source_date']}"
+                )
+                self.logger.logger.info(
+                    f"   - Feature engineering version: {metadata.get('feature_engineering_version', 'v1.0')}"
+                )
 
-                    metadata_loaded = True
-                    break
+                metadata_loaded = True
 
-            except Exception as e:
-                self.logger.logger.debug(f"Could not load metadata from {path}: {e}")
-                continue
+        except Exception as e:
+            self.logger.logger.debug(f"Could not load metadata from {latest_path}: {e}")
 
         if not metadata_loaded:
             self.logger.logger.warning(
-                f"Could not load feature metadata from any available dates"
+                f"Could not load feature metadata, creating basic metadata"
             )
             # Create basic metadata from DataFrame
+            actual_count = df.count()
             metadata = {
-                "total_records": df.count(),
+                "total_records": actual_count,
                 "total_features": len(df.columns),
-                "sliding_window_days": lookback_days,
-                "date_range": f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}",
+                "data_source_date": latest_date.strftime("%Y-%m-%d"),
+                "data_mode": "latest_single_file",
                 "feature_engineering_version": "v1.0",
             }
 
@@ -528,83 +479,107 @@ class MLTrainer:
         # Add log price for better model performance
         df_clean = df_clean.withColumn("log_price", log(col("price")))
 
-        # Define feature columns (excluding target variables, IDs, and non-predictive metadata)
-        exclude_columns = {
-            "price",
-            "price_per_m2",
-            "id",
-            "log_price",
-            "property_id",
-            "listing_id",
-            # Non-predictive metadata columns that add noise to training
-            "data_date",
-            "property_type",
-            "house_type",
-        }
-        feature_columns = [
-            col_name for col_name in df_clean.columns if col_name not in exclude_columns
+        # Define EXACT 16 feature columns from feature engineering pipeline
+        # These are the FINAL 16 features created by FeatureEngineer.create_all_features()
+        expected_feature_columns = [
+            # Core features (4)
+            "area",
+            "latitude",
+            "longitude",
+            # Room characteristics (3)
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            # House characteristics - encoded (3)
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            # Administrative hierarchy (3)
+            "province_id",
+            "district_id",
+            "ward_id",
+            # Property features - created by feature engineering (3)
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+            # Population feature - created by feature engineering (1)
+            "population_density",
         ]
 
-        self.logger.logger.info(f"🎯 Using {len(feature_columns)} feature columns:")
-        for col_name in feature_columns:
-            self.logger.logger.info(f"   - {col_name}")
+        # Validate that we have the expected 16 features
+        available_features = [
+            col for col in expected_feature_columns if col in df_clean.columns
+        ]
+        missing_features = [
+            col for col in expected_feature_columns if col not in df_clean.columns
+        ]
 
-        # Handle missing values and data types
-        for col_name in feature_columns:
-            col_type = dict(df_clean.dtypes)[col_name]
+        if missing_features:
+            self.logger.logger.error(
+                f"❌ Missing expected features: {missing_features}"
+            )
+            raise ValueError(f"Missing required ML features: {missing_features}")
 
-            if col_type in ["double", "float", "int", "bigint"]:
-                # Fill numeric columns with median or 0
-                median_val = (
-                    df_clean.select(col_name)
-                    .rdd.map(lambda x: x[0])
-                    .filter(lambda x: x is not None)
-                    .collect()
-                )
-                if median_val:
-                    fill_val = (
-                        sorted(median_val)[len(median_val) // 2] if median_val else 0.0
-                    )
-                else:
-                    fill_val = 0.0
-                df_clean = df_clean.fillna({col_name: fill_val})
+        if len(available_features) != 16:
+            self.logger.logger.error(
+                f"❌ Expected 16 features, got {len(available_features)}"
+            )
+            raise ValueError(
+                f"Feature count mismatch: expected 16, got {len(available_features)}"
+            )
 
-            elif col_type in ["string"]:
-                # Fill string columns with 'unknown'
-                df_clean = df_clean.fillna({col_name: "unknown"})
-
-        # Convert string categorical columns to numeric if needed
-        numeric_feature_columns = []
-
-        for col_name in feature_columns:
-            col_type = dict(df_clean.dtypes)[col_name]
-
-            if col_type in ["double", "float", "int", "bigint"]:
-                numeric_feature_columns.append(col_name)
-            elif col_type == "string":
-                # For now, skip string columns or convert them using StringIndexer if needed
-                # We'll handle categorical encoding in a future iteration
-                self.logger.logger.warning(f"⚠️ Skipping string column: {col_name}")
-                continue
-            else:
-                numeric_feature_columns.append(col_name)
-
+        feature_columns = available_features
         self.logger.logger.info(
-            f"🔢 Using {len(numeric_feature_columns)} numeric feature columns"
+            f"✅ Using EXACT 16 ML features from feature engineering:"
+        )
+        for i, col_name in enumerate(feature_columns, 1):
+            self.logger.logger.info(f"   {i:2d}. {col_name}")
+
+        # ❌ REMOVED: No more missing value handling here - data is already cleaned!
+        # Data comes from feature engineering pipeline which already handled missing values
+        self.logger.logger.info(
+            "💡 Data is pre-cleaned by feature engineering pipeline - no missing value handling needed"
         )
 
-        if not numeric_feature_columns:
-            raise ValueError("❌ No numeric feature columns found for training!")
+        # All 16 features should be numeric (already processed by feature engineering)
+        numeric_feature_columns = feature_columns
+
+        self.logger.logger.info(
+            f"✅ Validated 16 numeric feature columns for VectorAssembler"
+        )
+
+        # Validate feature vector size will be 16
+        expected_vector_size = 16
+        if len(numeric_feature_columns) != expected_vector_size:
+            raise ValueError(
+                f"❌ Expected {expected_vector_size} features, got {len(numeric_feature_columns)} for VectorAssembler!"
+            )
 
         # Create feature vector using VectorAssembler
         assembler = VectorAssembler(
             inputCols=numeric_feature_columns,
-            outputCol="features",
+            outputCol="raw_features",  # Raw features before scaling
             handleInvalid="skip",  # Skip rows with invalid values
         )
 
-        # Create preprocessing pipeline
-        pipeline = Pipeline(stages=[assembler])
+        # Add StandardScaler for feature normalization
+        scaler = StandardScaler(
+            inputCol="raw_features",
+            outputCol="features",  # Final scaled features
+            withStd=True,  # Scale to unit standard deviation
+            withMean=True,  # Center features around mean
+        )
+
+        # Create preprocessing pipeline with scaling
+        pipeline = Pipeline(stages=[assembler, scaler])
+
+        self.logger.logger.info("🎯 Added StandardScaler to preprocessing pipeline")
+        self.logger.logger.info(
+            "   - Features will be centered (mean=0) and scaled (std=1)"
+        )
+        self.logger.logger.info(
+            "   - This should improve model performance significantly"
+        )
 
         # Fit and transform
         pipeline_model = pipeline.fit(df_clean)
@@ -627,19 +602,52 @@ class MLTrainer:
         self.logger.logger.info(
             f"✅ Data preprocessing completed: {record_count:,} records ready for training"
         )
+        self.logger.logger.info(
+            "🎯 Features are standardized (mean=0, std=1) for better model performance"
+        )
 
         if record_count == 0:
             raise ValueError("❌ No valid records remaining after preprocessing!")
 
-        # Store preprocessing model
+        # Store preprocessing model (includes VectorAssembler + StandardScaler)
         self._preprocessing_model = pipeline_model
 
-        # Log feature vector statistics
+        # Log scaling statistics for debugging
+        try:
+            # Get a sample to check scaling
+            sample_features = final_df.select("features").first()["features"]
+            feature_means = np.mean([float(x) for x in sample_features.toArray()])
+            feature_stds = np.std([float(x) for x in sample_features.toArray()])
+
+            self.logger.logger.info(f"📊 Feature scaling check (sample):")
+            self.logger.logger.info(
+                f"   - Sample feature mean: {feature_means:.4f} (should be ~0)"
+            )
+            self.logger.logger.info(
+                f"   - Sample feature std: {feature_stds:.4f} (should be ~1)"
+            )
+        except Exception as e:
+            self.logger.logger.debug(f"Could not compute scaling statistics: {e}")
+
+        # Log feature vector statistics - should be exactly 16
         try:
             feature_size = final_df.select("features").first()["features"].size
-            self.logger.logger.info(f"🎯 Feature vector size: {feature_size}")
+            self.logger.logger.info(
+                f"🎯 Feature vector size: {feature_size} (expected: 16)"
+            )
+            if feature_size != 16:
+                self.logger.logger.error(
+                    f"❌ Feature vector size mismatch: {feature_size} != 16"
+                )
+                raise ValueError(
+                    f"Feature vector size mismatch: expected 16, got {feature_size}"
+                )
+            else:
+                self.logger.logger.info(
+                    "✅ Feature vector size is correct: 16 features"
+                )
         except Exception as e:
-            self.logger.logger.warning(f"Could not determine feature vector size: {e}")
+            self.logger.logger.warning(f"Could not validate feature vector size: {e}")
 
         return final_df, pipeline_model
 
@@ -752,16 +760,17 @@ class MLTrainer:
         total_records = df.count()
 
         # Sample if dataset is too large to prevent memory issues
-        if total_records > 500000:  # 500K records
-            sample_ratio = 500000 / total_records
-            df_sampled = df.sample(
-                withReplacement=False, fraction=sample_ratio, seed=42
-            )
-            self.logger.logger.info(
-                f"Sampling {sample_ratio:.3f} of data for sklearn models"
-            )
+        if total_records > 30000:  # 500K records
+            # sample_ratio = 500000 / total_records
+            # df_sampled = df.sample(
+            #     withReplacement=False, fraction=0.5, seed=42
+            # )
+            # self.logger.logger.info(
+            #     f"Sampling {sample_ratio:.3f} of data for sklearn models"
+            # )
+            df_sampled = df.limit(30000)
         else:
-            df_sampled = df.sample(withReplacement=False, fraction=0.50, seed=42)
+            df_sampled = df
             # df_sampled = df
 
         # log ra xem data the nao di
@@ -1442,6 +1451,36 @@ class MLTrainer:
         finally:
             self.logger.logger.info("🧹 Training pipeline cleanup completed")
 
+    def _find_latest_available_features(
+        self, property_type: str, requested_date: datetime
+    ) -> Tuple[Optional[str], Optional[datetime]]:
+        """🔍 Find the latest available feature file"""
+        from datetime import datetime, timedelta
+
+        base_path = f"/data/realestate/processed/ml/feature_store/{property_type}"
+
+        # Look back from requested date to find the latest available file
+        current_date = requested_date
+        for i in range(90):  # Look back 90 days maximum
+            check_date = current_date - timedelta(days=i)
+            year = check_date.strftime("%Y")
+            month = check_date.strftime("%m")
+            day = check_date.strftime("%d")
+            date_formatted = check_date.strftime("%Y%m%d")
+
+            feature_path = f"{base_path}/{year}/{month}/{day}/features_{property_type}_{date_formatted}.parquet"
+
+            if check_hdfs_path_exists(self.spark, feature_path):
+                self.logger.logger.info(
+                    f"✅ Found latest available feature file: {check_date.strftime('%Y-%m-%d')}"
+                )
+                return feature_path, check_date
+
+        self.logger.logger.error(
+            f"❌ No feature files found within 90 days from {requested_date.strftime('%Y-%m-%d')}"
+        )
+        return None, None
+
     def _find_most_recent_features(
         self, property_type: str = "house", min_days: int = 30
     ) -> List[str]:
@@ -1639,8 +1678,10 @@ class MLModelTrainer:
 
     This class provides the interface that the Airflow DAG expects and integrates
     the advanced ML training pipeline with the unified data preparation pipeline.
-    It implements the sliding window approach to resolve "Nothing has been added
-    to summarizer" errors.
+
+    Training Strategy:
+    - Data Preparation: Uses sliding window approach to ensure sufficient feature data
+    - Model Training: Uses latest available single feature file (no union across days)
     """
 
     def __init__(self, spark_session: Optional[SparkSession] = None):
@@ -1658,8 +1699,8 @@ class MLModelTrainer:
         🚀 Train all models using unified data preparation + advanced ML training
 
         This method integrates:
-        1. Unified data preparation pipeline (with sliding window approach)
-        2. Advanced ML training pipeline
+        1. Unified data preparation pipeline (uses sliding window for feature availability)
+        2. Advanced ML training pipeline (uses latest single feature file for training)
         3. Proper error handling and logging
 
         Args:
@@ -1673,7 +1714,7 @@ class MLModelTrainer:
         self.logger.logger.info(f"📅 Date: {date}, 🏠 Property Type: {property_type}")
 
         try:
-            # Step 1: Run unified data preparation with sliding window
+            # Step 1: Run unified data preparation
             self.logger.logger.info("📊 Step 1: Running unified data preparation...")
 
             # Import data preparation pipeline
@@ -1682,11 +1723,12 @@ class MLModelTrainer:
             # Initialize data preparator
             preparator = UnifiedDataPreparator(spark_session=self.spark)
 
-            # Run data preparation with sliding window (30 days) to ensure sufficient data
+            # Run data preparation with sliding window to ensure sufficient feature data is available
+            # Note: Data preparation uses sliding window, but training uses latest single feature file
             prep_result = preparator.prepare_training_data(
                 date=date,
                 property_type=property_type,
-                lookback_days=30,  # Use 30-day sliding window
+                lookback_days=30,  # Data prep sliding window to ensure feature availability
                 target_column="price",
             )
 
