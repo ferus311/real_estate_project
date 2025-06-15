@@ -44,6 +44,8 @@ class SimpleModelLoader:
         self.hdfs_url = "http://namenode:9870"  # Default HDFS WebHDFS URL
         self.base_model_path = "/data/realestate/processed/ml/models"
         self._loaded_models = {}
+        self._model_registry = None
+        self._latest_model_path = None
 
         # Try to connect to HDFS
         self._init_hdfs_client()
@@ -103,15 +105,68 @@ class SimpleModelLoader:
             logger.error(f"❌ Error finding latest model path: {e}")
             return None
 
+    def load_model_registry(self, model_path: str) -> Optional[Dict]:
+        """Load model registry JSON from HDFS"""
+        if not self.hdfs_available:
+            logger.warning("⚠️ HDFS not available for loading model registry")
+            return None
+
+        try:
+            registry_path = f"{model_path}/model_registry.json"
+
+            # Check if registry exists
+            if not self.hdfs_client.status(registry_path, strict=False):
+                logger.error(f"❌ Model registry not found: {registry_path}")
+                return None
+
+            # Create temp file to download registry
+            temp_dir = tempfile.mkdtemp()
+            local_registry_path = os.path.join(temp_dir, "model_registry.json")
+
+            # Download registry
+            self.hdfs_client.download(registry_path, local_registry_path)
+
+            # Read JSON content (handle Spark JSON format)
+            with open(local_registry_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+
+                # Handle Spark JSON format (one JSON object per line)
+                if content.startswith('{"registry":'):
+                    # Spark saves as {"registry": "actual_json_string"}
+                    spark_json = json.loads(content)
+                    registry_data = json.loads(spark_json["registry"])
+                else:
+                    # Direct JSON format
+                    registry_data = json.loads(content)
+
+            # Clean up temp file
+            os.remove(local_registry_path)
+            os.rmdir(temp_dir)
+
+            logger.info(f"✅ Loaded model registry from {registry_path}")
+            logger.info(
+                f"📊 Registry info: {registry_data.get('model_version', 'Unknown version')}"
+            )
+            logger.info(
+                f"🏆 Best model: {registry_data.get('best_model', {}).get('name', 'Unknown')}"
+            )
+
+            return registry_data
+
+        except Exception as e:
+            logger.error(f"❌ Error loading model registry: {e}")
+            return None
+
     def download_model_from_hdfs(
         self, hdfs_path: str, model_name: str
     ) -> Optional[str]:
-        """Download model from HDFS to local temp file"""
+        """Download sklearn model from HDFS to local temp file"""
         if not self.hdfs_available:
             return None
 
         try:
-            model_file_path = f"{hdfs_path}/{model_name}"
+            # Based on model training save structure: sklearn_models/{name}_model.pkl
+            model_file_path = f"{hdfs_path}/sklearn_models/{model_name}_model.pkl"
 
             # Check if model exists
             if not self.hdfs_client.status(model_file_path, strict=False):
@@ -120,27 +175,34 @@ class SimpleModelLoader:
 
             # Create temp file
             temp_dir = tempfile.mkdtemp()
-            local_path = os.path.join(temp_dir, model_name)
+            local_path = os.path.join(temp_dir, f"{model_name}_model.pkl")
 
             # Download model
             self.hdfs_client.download(model_file_path, local_path)
-            logger.info(f"✅ Downloaded model to: {local_path}")
+
+            # Get file size for logging
+            file_size = os.path.getsize(local_path) / (1024 * 1024)  # MB
+            logger.info(
+                f"✅ Downloaded {model_name} model to: {local_path} ({file_size:.2f} MB)"
+            )
             return local_path
 
         except Exception as e:
-            logger.error(f"❌ Error downloading model: {e}")
+            logger.error(f"❌ Error downloading model {model_name}: {e}")
             return None
 
     def load_model_from_hdfs(self, model_name: str) -> Optional[Dict]:
-        """Load a specific model from HDFS"""
+        """Load xgboost or lightgbm model from HDFS"""
         try:
-            latest_path = self.find_latest_model_path()
-            if not latest_path:
-                return None
+            # Get latest model path if not already loaded
+            if not self._latest_model_path:
+                self._latest_model_path = self.find_latest_model_path()
+                if not self._latest_model_path:
+                    return None
 
             # Try to download and load the model
             local_path = self.download_model_from_hdfs(
-                latest_path, f"{model_name}.joblib"
+                self._latest_model_path, model_name
             )
             if not local_path:
                 return None
@@ -148,14 +210,29 @@ class SimpleModelLoader:
             # Load model with joblib
             model = joblib.load(local_path)
 
+            # Get metrics from registry if available (optional)
+            model_metrics = {}
+            if self._model_registry and model_name in self._model_registry.get(
+                "all_models", {}
+            ):
+                registry_model = self._model_registry["all_models"][model_name]
+                model_metrics = {
+                    "rmse": registry_model.get("rmse", 0),
+                    "mae": registry_model.get("mae", 0),
+                    "r2": registry_model.get("r2", 0),
+                }
+
             # Clean up temp file
             os.remove(local_path)
             os.rmdir(os.path.dirname(local_path))
+
+            logger.info(f"✅ Successfully loaded {model_name} model")
 
             return {
                 "model": model,
                 "type": "sklearn",
                 "name": model_name,
+                "metrics": model_metrics,
                 "loaded_at": datetime.now().isoformat(),
             }
 
@@ -163,18 +240,48 @@ class SimpleModelLoader:
             logger.error(f"❌ Error loading model {model_name}: {e}")
             return None
 
-    def load_all_models(self):
-        """Load all available models"""
-        model_names = ["linear_regression", "xgboost", "lightgbm", "ensemble"]
+    def load_all_models(self) -> Dict[str, bool]:
+        """Load the 2 sklearn models: xgboost and lightgbm"""
+        if not self.hdfs_available:
+            logger.warning("⚠️ HDFS not available, cannot load models")
+            return {}
+
+        # Get latest model path
+        if not self._latest_model_path:
+            self._latest_model_path = self.find_latest_model_path()
+            if not self._latest_model_path:
+                logger.error("❌ No model path found")
+                return {}
+
+        # Load model registry for metrics
+        if not self._model_registry:
+            self._model_registry = self.load_model_registry(self._latest_model_path)
+
+        # Simple: load 2 known sklearn models
+        model_names = ["xgboost", "lightgbm"]
+        load_results = {}
+        successful_loads = 0
 
         for model_name in model_names:
             try:
-                model_info = self.load_model_from_hdfs(model_name)
-                if model_info:
-                    self._loaded_models[model_name] = model_info
-                    logger.info(f"✅ Loaded model: {model_name}")
+                logger.info(f"🔄 Loading {model_name} model...")
+                model_data = self.load_model_from_hdfs(model_name)
+
+                if model_data:
+                    self._loaded_models[model_name] = model_data
+                    load_results[model_name] = True
+                    successful_loads += 1
+                    logger.info(f"✅ Successfully loaded {model_name}")
+                else:
+                    load_results[model_name] = False
+                    logger.error(f"❌ Failed to load {model_name}")
+
             except Exception as e:
-                logger.error(f"❌ Failed to load model {model_name}: {e}")
+                logger.error(f"❌ Exception loading {model_name}: {e}")
+                load_results[model_name] = False
+
+        logger.info(f"📊 Loaded {successful_loads}/2 models successfully")
+        return load_results
 
     def _create_mock_prediction(
         self, input_data: Dict, model_name: str = "mock"
@@ -294,6 +401,66 @@ class SimpleModelLoader:
                 "success": False,
                 "error": str(e),
                 "fallback_prediction": mock_result,
+                "input_features": input_data,
+            }
+
+    def predict_with_xgboost(self, input_data: Dict) -> Dict[str, Any]:
+        """Predict price using XGBoost model specifically"""
+        return self.predict_price(input_data, "xgboost")
+
+    def predict_with_lightgbm(self, input_data: Dict) -> Dict[str, Any]:
+        """Predict price using LightGBM model specifically"""
+        return self.predict_price(input_data, "lightgbm")
+
+    def predict_with_both_models(self, input_data: Dict) -> Dict[str, Any]:
+        """Predict with both models and return comparison"""
+        try:
+            # Load models if not already loaded
+            if not self._loaded_models and self.hdfs_available:
+                self.load_all_models()
+
+            xgb_result = self.predict_with_xgboost(input_data)
+            lgb_result = self.predict_with_lightgbm(input_data)
+
+            # Calculate average prediction
+            if xgb_result["success"] and lgb_result["success"]:
+                avg_price = (
+                    xgb_result["predicted_price"] + lgb_result["predicted_price"]
+                ) / 2
+
+                return {
+                    "success": True,
+                    "ensemble_prediction": {
+                        "predicted_price": float(avg_price),
+                        "predicted_price_formatted": f"{avg_price:,.0f} VND",
+                    },
+                    "individual_predictions": {
+                        "xgboost": {
+                            "price": xgb_result["predicted_price"],
+                            "price_formatted": xgb_result["predicted_price_formatted"],
+                            "metrics": xgb_result.get("model_metrics", {}),
+                        },
+                        "lightgbm": {
+                            "price": lgb_result["predicted_price"],
+                            "price_formatted": lgb_result["predicted_price_formatted"],
+                            "metrics": lgb_result.get("model_metrics", {}),
+                        },
+                    },
+                    "input_features": input_data,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "One or both models failed to predict",
+                    "xgboost_result": xgb_result,
+                    "lightgbm_result": lgb_result,
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Error in ensemble prediction: {e}")
+            return {
+                "success": False,
+                "error": str(e),
                 "input_features": input_data,
             }
 

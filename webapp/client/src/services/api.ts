@@ -75,7 +75,8 @@ export interface Property {
   address: string;
   province: string;
   district: string;
-  ward: string;
+  ward?: string;
+  street?: string;
   latitude?: number;
   longitude?: number;
   images?: string[];
@@ -160,40 +161,30 @@ export const realEstateAPI = {
       return response.data;
     },
 
-    // Predict with all models
+    // Predict with selected models (XGBoost, LightGBM only)
     predictAll: async (data: PredictionInput): Promise<{
-      linearRegression: PredictionResult;
       xgboost: PredictionResult;
       lightgbm: PredictionResult;
-      ensemble: PredictionResult;
       average?: number;
     }> => {
-      const [lr, xgb, lgb, ensemble] = await Promise.allSettled([
-        realEstateAPI.prediction.predictLinearRegression(data),
+      const [xgb, lgb] = await Promise.allSettled([
         realEstateAPI.prediction.predictXGBoost(data),
         realEstateAPI.prediction.predictLightGBM(data),
-        realEstateAPI.prediction.predictEnsemble(data),
       ]);
 
       const results: {
-        linearRegression: PredictionResult;
         xgboost: PredictionResult;
         lightgbm: PredictionResult;
-        ensemble: PredictionResult;
         average?: number;
       } = {
-        linearRegression: lr.status === 'fulfilled' ? lr.value : { success: false, error: 'Failed to predict' } as PredictionResult,
         xgboost: xgb.status === 'fulfilled' ? xgb.value : { success: false, error: 'Failed to predict' } as PredictionResult,
         lightgbm: lgb.status === 'fulfilled' ? lgb.value : { success: false, error: 'Failed to predict' } as PredictionResult,
-        ensemble: ensemble.status === 'fulfilled' ? ensemble.value : { success: false, error: 'Failed to predict' } as PredictionResult,
       };
 
       // Calculate average from successful predictions
       const successfulPredictions = [
-        results.linearRegression,
         results.xgboost,
         results.lightgbm,
-        results.ensemble,
       ].filter(r => r.success && r.predicted_price);
 
       if (successfulPredictions.length > 0) {

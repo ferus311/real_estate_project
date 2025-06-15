@@ -79,37 +79,216 @@ def _predict_with_model(request, model_name: str):
 @api_view(["POST"])
 def predict_price_linear_regression(request):
     """
-    API endpoint for Linear Regression price prediction
+    API endpoint for Linear Regression price prediction (DEPRECATED - use XGBoost or LightGBM)
     POST /api/prediction/linear-regression/
     """
-    return _predict_with_model(request, model_name="linear_regression")
+    return Response(
+        {
+            "error": "Linear Regression model is deprecated",
+            "message": "Please use /api/prediction/xgboost/ or /api/prediction/lightgbm/ instead",
+            "available_endpoints": [
+                "/api/prediction/xgboost/",
+                "/api/prediction/lightgbm/",
+                "/api/prediction/ensemble/",
+            ],
+        },
+        status=status.HTTP_410_GONE,
+    )
 
 
 @api_view(["POST"])
 def predict_price_xgboost(request):
     """
-    API endpoint for XGBoost price prediction
+    API endpoint for XGBoost price prediction only
     POST /api/prediction/xgboost/
     """
-    return _predict_with_model(request, model_name="xgboost")
+    try:
+        input_data = request.data
+
+        # Validate required fields
+        required_fields = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+        ]
+
+        missing_fields = [field for field in required_fields if field not in input_data]
+        if missing_fields:
+            return Response(
+                {
+                    "error": f"Missing required fields: {missing_fields}",
+                    "required_fields": required_fields,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get model loader and predict with XGBoost only
+        model_loader = get_model_loader()
+        result = model_loader.predict_with_xgboost(input_data)
+
+        if not result.get("success", False):
+            return Response(
+                {"error": result.get("error", "XGBoost prediction failed")},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "model": "xgboost",
+                "predicted_price": result.get("predicted_price"),
+                "predicted_price_formatted": result.get("predicted_price_formatted"),
+                "model_metrics": result.get("model_metrics", {}),
+                "input_features": result.get("input_features", input_data),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in XGBoost prediction: {e}")
+        return Response(
+            {"error": f"XGBoost prediction failed: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(["POST"])
 def predict_price_lightgbm(request):
     """
-    API endpoint for LightGBM price prediction
+    API endpoint for LightGBM price prediction only
     POST /api/prediction/lightgbm/
     """
-    return _predict_with_model(request, "lightgbm")
+    try:
+        input_data = request.data
+
+        # Validate required fields
+        required_fields = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+        ]
+
+        missing_fields = [field for field in required_fields if field not in input_data]
+        if missing_fields:
+            return Response(
+                {
+                    "error": f"Missing required fields: {missing_fields}",
+                    "required_fields": required_fields,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get model loader and predict with LightGBM only
+        model_loader = get_model_loader()
+        result = model_loader.predict_with_lightgbm(input_data)
+
+        if not result.get("success", False):
+            return Response(
+                {"error": result.get("error", "LightGBM prediction failed")},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "model": "lightgbm",
+                "predicted_price": result.get("predicted_price"),
+                "predicted_price_formatted": result.get("predicted_price_formatted"),
+                "model_metrics": result.get("model_metrics", {}),
+                "input_features": result.get("input_features", input_data),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in LightGBM prediction: {e}")
+        return Response(
+            {"error": f"LightGBM prediction failed: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(["POST"])
 def predict_price_ensemble(request):
     """
-    API endpoint for Ensemble price prediction (all available models)
+    API endpoint for Ensemble prediction (both XGBoost + LightGBM)
     POST /api/prediction/ensemble/
     """
-    return _predict_with_model(request, "ensemble")
+    try:
+        input_data = request.data
+
+        # Validate required fields
+        required_fields = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+        ]
+
+        missing_fields = [field for field in required_fields if field not in input_data]
+        if missing_fields:
+            return Response(
+                {
+                    "error": f"Missing required fields: {missing_fields}",
+                    "required_fields": required_fields,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get model loader and predict with both models
+        model_loader = get_model_loader()
+        result = model_loader.predict_with_both_models(input_data)
+
+        if not result.get("success", False):
+            return Response(
+                {"error": result.get("error", "Ensemble prediction failed")},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "model": "ensemble",
+                "ensemble_prediction": result.get("ensemble_prediction", {}),
+                "individual_predictions": result.get("individual_predictions", {}),
+                "input_features": result.get("input_features", input_data),
+                "note": "Ensemble prediction using XGBoost + LightGBM average",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Error in ensemble prediction: {e}")
+        return Response(
+            {"error": f"Ensemble prediction failed: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(["GET"])
@@ -121,14 +300,21 @@ def model_info(request):
     try:
         model_loader = get_model_loader()
 
-        # Get model information using simple service
+        # Get model information from simple service
         model_info_data = model_loader.get_model_info()
 
         return Response(
             {
                 "success": True,
+                "available_endpoints": {
+                    "xgboost": "/api/prediction/xgboost/",
+                    "lightgbm": "/api/prediction/lightgbm/",
+                    "ensemble": "/api/prediction/ensemble/",
+                },
                 "models": model_info_data,
-                "note": "Using simple ML service without Spark dependency",
+                "supported_models": ["xgboost", "lightgbm"],
+                "deprecated_models": ["linear_regression"],
+                "note": "Using simple ML service with direct HDFS access - no Spark dependency",
             },
             status=status.HTTP_200_OK,
         )

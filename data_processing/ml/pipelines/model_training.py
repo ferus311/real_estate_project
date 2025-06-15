@@ -94,17 +94,17 @@ class ModelConfig:
     def get_spark_model_configs():
         """Get Spark model configurations - static method to avoid serialization"""
         return {
-            # "random_forest": {
-            #     "class": RandomForestRegressor,
-            #     "params": {
-            #         "featuresCol": "features",
-            #         "labelCol": "price",
-            #         "numTrees": 100,
-            #         "maxDepth": 15,
-            #         "maxBins": 64,
-            #         "seed": 42,
-            #     },
-            # },
+            "random_forest": {
+                "class": RandomForestRegressor,
+                "params": {
+                    "featuresCol": "features",
+                    "labelCol": "price",
+                    "numTrees": 100,
+                    "maxDepth": 15,
+                    "maxBins": 64,
+                    "seed": 42,
+                },
+            },
             "linear_regression": {
                 "class": LinearRegression,
                 "params": {

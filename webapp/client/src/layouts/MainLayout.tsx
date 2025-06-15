@@ -7,9 +7,9 @@ import AppFooter from '@/components/layout/AppFooter'
 export default function MainLayout() {
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <AppSidebar />
+      {/* <AppSidebar /> */}
       <Layout>
-        <AppHeader />
+        {/* <AppHeader /> */}
         <AppContent />
         <AppFooter />
       </Layout>

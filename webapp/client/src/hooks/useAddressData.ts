@@ -8,11 +8,17 @@ export interface Ward {
   projects?: any[];
 }
 
+export interface Street {
+  id: string;
+  name: string;
+  prefix?: string;
+}
+
 export interface District {
   id: string;
   name: string;
   wards?: Ward[];
-  streets?: any[];
+  streets?: Street[];
   projects?: any[];
 }
 
@@ -90,6 +96,21 @@ export const useAddressData = () => {
     }));
   };
 
+  // Get street options for a district
+  const getStreetOptions = (provinceId: string, districtId: string): AddressOption[] => {
+    const province = provinces.find(p => p.id === provinceId);
+    if (!province) return [];
+
+    const district = province.districts.find(d => d.id === districtId);
+    if (!district || !district.streets) return [];
+
+    return district.streets.map(street => ({
+      value: street.id,
+      label: street.prefix ? `${street.prefix} ${street.name}` : street.name,
+      id: street.id,
+    }));
+  };
+
   // Get province by ID
   const getProvinceById = (id: string): Province | undefined => {
     return provinces.find(p => p.id === id);
@@ -109,8 +130,20 @@ export const useAddressData = () => {
     return district.wards.find(w => w.id === wardId);
   };
 
+  // Get street by ID
+  const getStreetById = (provinceId: string, districtId: string, streetId: string): Street | undefined => {
+    const district = getDistrictById(provinceId, districtId);
+    if (!district || !district.streets) return undefined;
+    return district.streets.find(s => s.id === streetId);
+  };
+
   // Get full address string
-  const getFullAddress = (provinceId: string, districtId?: string, wardId?: string): string => {
+  const getFullAddress = (
+    provinceId: string,
+    districtId?: string,
+    wardId?: string,
+    streetId?: string
+  ): string => {
     const province = getProvinceById(provinceId);
     if (!province) return '';
 
@@ -130,6 +163,14 @@ export const useAddressData = () => {
       }
     }
 
+    if (districtId && streetId) {
+      const street = getStreetById(provinceId, districtId, streetId);
+      if (street) {
+        const streetFullName = street.prefix ? `${street.prefix} ${street.name}` : street.name;
+        address = `${streetFullName}, ${address}`;
+      }
+    }
+
     return address;
   };
 
@@ -140,9 +181,11 @@ export const useAddressData = () => {
     getProvinceOptions,
     getDistrictOptions,
     getWardOptions,
+    getStreetOptions,
     getProvinceById,
     getDistrictById,
     getWardById,
+    getStreetById,
     getFullAddress,
   };
 };

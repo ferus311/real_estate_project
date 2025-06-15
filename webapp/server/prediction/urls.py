@@ -2,12 +2,12 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    # Prediction endpoints - 4 models as requested
-    path(
-        "linear-regression/",
-        views.predict_price_linear_regression,
-        name="predict_linear_regression",
-    ),
+    # Prediction endpoints - maintain backward compatibility
+    # path(
+    #     "linear-regression/",
+    #     views.predict_price_linear_regression,
+    #     name="predict_linear_regression",
+    # ),
     path("xgboost/", views.predict_price_xgboost, name="predict_xgboost"),
     path("lightgbm/", views.predict_price_lightgbm, name="predict_lightgbm"),
     path("ensemble/", views.predict_price_ensemble, name="predict_ensemble"),
