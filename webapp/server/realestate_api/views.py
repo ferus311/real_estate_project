@@ -18,12 +18,12 @@ def api_info(request):
                 "prediction": {
                     "description": "Price prediction using ML models",
                     "endpoints": [
-                        "/api/prediction/linear-regression/",
                         "/api/prediction/xgboost/",
                         "/api/prediction/lightgbm/",
-                        "/api/prediction/ensemble/",
+                        "/api/prediction/all-models/",
                         "/api/prediction/model-info/",
                         "/api/prediction/feature-info/",
+                        "/api/prediction/all-models-info/",
                     ],
                 },
                 "search": {

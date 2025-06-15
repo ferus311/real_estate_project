@@ -36,7 +36,14 @@ import {
 import { useAddressData } from '../hooks/useAddressData';
 import GoogleMapComponent from '../components/GoogleMapComponent';
 import { geocodeAddress, reverseGeocode, buildFullAddress } from '../services/geocoding';
-import realEstateAPI, { PredictionInput, PredictionResult, Property, SearchFilters } from '../services/api';
+import realEstateAPI, {
+    PredictionInput,
+    PredictionResult,
+    Property,
+    SearchFilters,
+    getPropertyAddress,
+    getPropertyShortAddress
+} from '../services/api';
 import {
     HOUSE_DIRECTION_OPTIONS,
     LEGAL_STATUS_OPTIONS,
@@ -115,10 +122,18 @@ export default function Home() {
     const handlePredict = async (values: any) => {
         setLoading(true);
         try {
+            // Lấy tọa độ hiện tại từ form (đã được cập nhật qua handleLocationChange hoặc geocoding)
+            const currentLat = form.getFieldValue('latitude') || values.latitude || 10.762622;
+            const currentLng = form.getFieldValue('longitude') || values.longitude || 106.660172;
+
+            console.log('🗺️ Using current coordinates for prediction:', { lat: currentLat, lng: currentLng });
+            console.log('🗺️ Form coordinates:', { lat: form.getFieldValue('latitude'), lng: form.getFieldValue('longitude') });
+            console.log('🗺️ Values coordinates:', { lat: values.latitude, lng: values.longitude });
+
             const predictionData: PredictionInput = {
                 area: values.area,
-                latitude: values.latitude,
-                longitude: values.longitude,
+                latitude: currentLat,  // Sử dụng tọa độ hiện tại
+                longitude: currentLng, // Sử dụng tọa độ hiện tại
                 bedroom: values.bedroom,
                 bathroom: values.bathroom,
                 floor_count: values.floor_count,
@@ -145,8 +160,17 @@ export default function Home() {
 
             setPredictionResults(filteredResults);
 
-            // Search for similar properties
-            await searchSimilarProperties(predictionData);
+            console.log('💡 Prediction results before searching similar properties:', {
+                xgboost: results.xgboost?.predicted_price,
+                lightgbm: results.lightgbm?.predicted_price,
+                average: results.average
+            });
+
+            // Thêm delay nhỏ để đảm bảo prediction results được xử lý đúng
+            setTimeout(async () => {
+                // Search for similar properties với tọa độ chính xác từ predictionData
+                await searchSimilarProperties(predictionData, filteredResults);
+            }, 100); // Delay 100ms
 
             notification.success({
                 message: '🎉 Dự đoán thành công!',
@@ -171,44 +195,107 @@ export default function Home() {
     };
 
     // Search for similar properties
-    const searchSimilarProperties = async (predictionData: PredictionInput) => {
+    const searchSimilarProperties = async (predictionData: PredictionInput, predictionResults?: PredictionResults) => {
         setLoadingProperties(true);
         try {
+            console.log('🔍 searchSimilarProperties called with coordinates:', {
+                lat: predictionData.latitude,
+                lng: predictionData.longitude,
+                area: predictionData.area,
+                province_id: predictionData.province_id,
+                district_id: predictionData.district_id,
+                ward_id: predictionData.ward_id
+            });
+
+            console.log('🗺️ Current coordinates from predictionData:', {
+                lat: predictionData.latitude,
+                lng: predictionData.longitude
+            });
+
+            console.log('🗺️ Current coordinates from form:', {
+                lat: form.getFieldValue('latitude'),
+                lng: form.getFieldValue('longitude')
+            });
+
             // Use the best prediction or average of successful predictions for price range
             let priceRange = 2000000000; // Default fallback
 
-            if (predictionResults) {
+            // Use passed predictionResults or fallback to state
+            const currentResults = predictionResults; // Use fresh results from parameter
+
+            console.log('💰 Current prediction results for search:', currentResults);
+
+            if (currentResults) {
                 const validPrices = [];
-                if (predictionResults.xgboost?.success && predictionResults.xgboost?.predicted_price) {
-                    validPrices.push(predictionResults.xgboost.predicted_price);
+                if (currentResults.xgboost?.success && currentResults.xgboost?.predicted_price) {
+                    validPrices.push(currentResults.xgboost.predicted_price);
+                    console.log('✅ XGBoost price:', currentResults.xgboost.predicted_price);
                 }
-                if (predictionResults.lightgbm?.success && predictionResults.lightgbm?.predicted_price) {
-                    validPrices.push(predictionResults.lightgbm.predicted_price);
+                if (currentResults.lightgbm?.success && currentResults.lightgbm?.predicted_price) {
+                    validPrices.push(currentResults.lightgbm.predicted_price);
+                    console.log('✅ LightGBM price:', currentResults.lightgbm.predicted_price);
                 }
 
                 if (validPrices.length > 0) {
                     priceRange = validPrices.reduce((sum, price) => sum + price, 0) / validPrices.length;
+                    console.log('💰 Calculated average price range for search:', formatPrice(priceRange));
+                } else {
+                    console.log('⚠️ No valid prices found, using default range:', formatPrice(priceRange));
                 }
+            } else {
+                console.log('⚠️ No prediction results provided, using default range:', formatPrice(priceRange));
             }
 
+            // Get province name from the prediction data thay vì từ state cũ
+            const provinceOption = (getProvinceOptions() || []).find(p => p.value === predictionData.province_id.toString());
+            const districtOption = (getDistrictOptions(predictionData.province_id.toString()) || []).find(d => d.value === predictionData.district_id.toString());
+
             const filters: SearchFilters = {
-                province: getFullAddress(predictionData.province_id.toString()).split(',').pop()?.trim(),
-                price_min: priceRange * 0.8,
-                price_max: priceRange * 1.2,
-                area_min: predictionData.area * 0.8,
-                area_max: predictionData.area * 1.2,
-                bedroom_min: Math.max(1, predictionData.bedroom - 1),
-                bedroom_max: predictionData.bedroom + 1,
-                limit: 10,
+                // Tìm theo khu vực gần nhất - ưu tiên district trước, nếu không có thì province
+                province: provinceOption?.label || '',
+                district: districtOption?.label || '',
+                // Khoảng giá rộng hơn để tìm được nhiều nhà hơn: ±30%
+                price_min: Math.max(0, priceRange * 0.7),
+                price_max: priceRange * 1.3,
+                // Diện tích linh hoạt hơn: ±40%
+                area_min: Math.max(0, predictionData.area * 0.6),
+                area_max: predictionData.area * 1.4,
+                // Số phòng linh hoạt: có thể khác ±2 phòng
+                bedroom_min: Math.max(1, predictionData.bedroom - 2),
+                bedroom_max: predictionData.bedroom + 2,
+                // Tăng limit để có nhiều lựa chọn hơn
+                limit: 20,
+                page: 1,
             };
 
             console.log('🔍 Searching for similar properties with filters:', filters);
+            console.log('💰 Price range for search:', formatPrice(filters.price_min || 0), '-', formatPrice(filters.price_max || 0));
             const response = await realEstateAPI.search.advanced(filters);
-            setProperties(response.results || []);
-            console.log('🏘️ Found similar properties:', response.results?.length || 0);
+            console.log('🏘️ Search response:', response);
+
+            // Lấy properties từ response và sort theo khoảng cách giá
+            const foundProperties = response.results || [];
+
+            if (foundProperties && foundProperties.length > 0) {
+                // Sort theo độ gần của giá so với giá dự đoán
+                const sortedProperties = foundProperties.sort((a, b) => {
+                    const diffA = Math.abs(a.price - priceRange);
+                    const diffB = Math.abs(b.price - priceRange);
+                    return diffA - diffB;
+                });
+
+                // Chỉ lấy 12 nhà tương tự nhất
+                setProperties(sortedProperties.slice(0, 12));
+                console.log('🏘️ Found and sorted similar properties:', sortedProperties.length);
+            } else {
+                setProperties([]);
+                console.log('🏘️ No similar properties found');
+            }
+
         } catch (error) {
             console.error('Failed to search properties:', error);
             message.error('Không thể tìm kiếm nhà tương tự');
+            setProperties([]);
         } finally {
             setLoadingProperties(false);
         }
@@ -1175,7 +1262,7 @@ export default function Home() {
                                 title={
                                     <div className="flex items-center space-x-2">
                                         <SearchOutlined className="text-green-600" />
-                                        <span>Nhà tương tự trong khu vực</span>
+                                        <span>Nhà tương tự với nhà bạn dự đoán</span>
                                     </div>
                                 }
                                 className="shadow-lg"
@@ -1194,10 +1281,10 @@ export default function Home() {
                                                     className="h-full cursor-pointer"
                                                     onClick={() => handlePropertyClick(property)}
                                                     cover={
-                                                        <div className="h-32 bg-gradient-to-br from-blue-100 via-purple-100 to-green-100 flex items-center justify-center relative">
-                                                            <HomeOutlined className="text-4xl text-gray-500" />
-                                                            <div className="absolute top-2 right-2">
-                                                                <EyeOutlined className="text-lg text-gray-600" />
+                                                        <div className="h-20 bg-gradient-to-br from-blue-100 via-purple-100 to-green-100 flex items-center justify-center relative">
+                                                            <HomeOutlined className="text-2xl text-gray-500" />
+                                                            <div className="absolute top-1 right-1">
+                                                                <EyeOutlined className="text-sm text-gray-600" />
                                                             </div>
                                                         </div>
                                                     }
@@ -1223,14 +1310,8 @@ export default function Home() {
                                                         </div>
                                                         <div className="text-xs text-gray-600">
                                                             📐 {property.area}m² • 🛏️ {property.bedroom}PN • 🚿 {property.bathroom}PT
-                                                        </div>
-                                                        <div className="text-xs text-gray-500 h-8 overflow-hidden">
-                                                            📍 {[
-                                                                property.street,
-                                                                property.ward,
-                                                                property.district,
-                                                                property.province
-                                                            ].filter(Boolean).join(', ') || '(Không có địa chỉ)'}
+                                                        </div>                                        <div className="text-xs text-gray-500 h-8 overflow-hidden">
+                                                            📍 {getPropertyAddress(property) || '(Không có địa chỉ)'}
                                                         </div>
                                                     </div>
                                                 </Card>
@@ -1341,11 +1422,7 @@ export default function Home() {
                             <div>
                                 <Text strong className="block mb-2">📍 Địa chỉ:</Text>
                                 <Card className="bg-gray-50"><Text>
-                                    {selectedProperty.address ||
-                                        [selectedProperty.street, selectedProperty.ward, selectedProperty.district, selectedProperty.province]
-                                            .filter(Boolean)
-                                            .join(', ') ||
-                                        '(Không có địa chỉ)'}</Text>
+                                    {getPropertyAddress(selectedProperty) || '(Không có địa chỉ)'}</Text>
                                 </Card>
                             </div>
 

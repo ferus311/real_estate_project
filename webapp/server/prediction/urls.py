@@ -10,7 +10,9 @@ urlpatterns = [
     # ),
     path("xgboost/", views.predict_price_xgboost, name="predict_xgboost"),
     path("lightgbm/", views.predict_price_lightgbm, name="predict_lightgbm"),
-    path("ensemble/", views.predict_price_ensemble, name="predict_ensemble"),
+    # New endpoints for extended model support
+    path("all-models/", views.predict_price_all_models, name="predict_all_models"),
+    path("all-models-info/", views.all_models_info, name="all_models_info"),
     # Information endpoints
     path("model-info/", views.model_info, name="model_info"),
     path("feature-info/", views.feature_info, name="feature_info"),

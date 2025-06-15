@@ -18,6 +18,18 @@ CREATE TABLE provinces (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Province population density lookup table
+CREATE TABLE province_population_density (
+    id SERIAL PRIMARY KEY,
+    province_id INTEGER NOT NULL REFERENCES provinces(id),
+    province_name VARCHAR(100) NOT NULL,
+    average_population_thousand DECIMAL(10,2),
+    population_density DECIMAL(10,2),
+    area_km2 DECIMAL(10,2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(province_id)
+);
+
 -- Districts
 CREATE TABLE districts (
     id SERIAL PRIMARY KEY,

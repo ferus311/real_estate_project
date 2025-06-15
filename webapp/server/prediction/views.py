@@ -13,6 +13,15 @@ except ImportError:
     # Fallback to original service if simple service not available
     from .ml_service import get_model_loader
 
+# Also try to import extended ML service for additional model support
+try:
+    from .extended_ml_service import get_extended_loader
+
+    EXTENDED_LOADER_AVAILABLE = True
+except ImportError:
+    EXTENDED_LOADER_AVAILABLE = False
+    print("⚠️ Extended ML loader not available - Spark models not supported")
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,7 +98,6 @@ def predict_price_linear_regression(request):
             "available_endpoints": [
                 "/api/prediction/xgboost/",
                 "/api/prediction/lightgbm/",
-                "/api/prediction/ensemble/",
             ],
         },
         status=status.HTTP_410_GONE,
@@ -226,11 +234,15 @@ def predict_price_lightgbm(request):
         )
 
 
+# DEPRECATED: Ensemble endpoint removed - use individual models instead
+# Users should call /api/prediction/xgboost/ and /api/prediction/lightgbm/ separately
+
+
 @api_view(["POST"])
-def predict_price_ensemble(request):
+def predict_price_all_models(request):
     """
-    API endpoint for Ensemble prediction (both XGBoost + LightGBM)
-    POST /api/prediction/ensemble/
+    API endpoint for prediction using ALL available models (sklearn + Spark)
+    POST /api/prediction/all-models/
     """
     try:
         input_data = request.data
@@ -261,32 +273,60 @@ def predict_price_ensemble(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Get model loader and predict with both models
-        model_loader = get_model_loader()
-        result = model_loader.predict_with_both_models(input_data)
-
-        if not result.get("success", False):
+        # Check if extended loader is available
+        if not EXTENDED_LOADER_AVAILABLE:
             return Response(
-                {"error": result.get("error", "Ensemble prediction failed")},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {
+                    "error": "Extended ML service not available",
+                    "message": "Use /api/prediction/xgboost/ or /api/prediction/lightgbm/ instead",
+                    "available_endpoints": [
+                        "/api/prediction/xgboost/",
+                        "/api/prediction/lightgbm/",
+                    ],
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+        # Get extended loader and make predictions
+        extended_loader = get_extended_loader()
+
+        # First ensure models are loaded
+        load_results = extended_loader.load_all_models()
+
+        # Process input data to get features
+        processed_data = extended_loader.preprocess_input_data(input_data)
+
+        if not processed_data.get("success", False):
+            return Response(
+                {"error": processed_data.get("error", "Failed to process input data")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Extract processed features
+        features = processed_data["features"]
+
+        # Make predictions with all models
+        all_predictions = extended_loader.predict_all_models(features)
+
+        # Get model information
+        model_info = extended_loader.get_loaded_models()
 
         return Response(
             {
                 "success": True,
-                "model": "ensemble",
-                "ensemble_prediction": result.get("ensemble_prediction", {}),
-                "individual_predictions": result.get("individual_predictions", {}),
-                "input_features": result.get("input_features", input_data),
-                "note": "Ensemble prediction using XGBoost + LightGBM average",
+                "predictions": all_predictions,
+                "input_features": processed_data.get("input_features", {}),
+                "model_info": model_info,
+                "load_results": load_results,
+                "note": "Predictions from all available models (sklearn + Spark)",
             },
             status=status.HTTP_200_OK,
         )
 
     except Exception as e:
-        logger.error(f"Error in ensemble prediction: {e}")
+        logger.error(f"Error in all-models prediction: {e}")
         return Response(
-            {"error": f"Ensemble prediction failed: {str(e)}"},
+            {"error": f"All-models prediction failed: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
@@ -309,7 +349,6 @@ def model_info(request):
                 "available_endpoints": {
                     "xgboost": "/api/prediction/xgboost/",
                     "lightgbm": "/api/prediction/lightgbm/",
-                    "ensemble": "/api/prediction/ensemble/",
                 },
                 "models": model_info_data,
                 "supported_models": ["xgboost", "lightgbm"],
@@ -345,5 +384,54 @@ def feature_info(request):
         logger.error(f"Error getting feature info: {e}")
         return Response(
             {"error": f"Failed to get feature info: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET"])
+def all_models_info(request):
+    """
+    Get information about all available models (sklearn + Spark)
+    GET /api/prediction/all-models-info/
+    """
+    try:
+        if not EXTENDED_LOADER_AVAILABLE:
+            return Response(
+                {
+                    "error": "Extended ML service not available",
+                    "available_models": ["xgboost", "lightgbm"],
+                    "spark_models": "Not supported",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        extended_loader = get_extended_loader()
+
+        # Load all models to get information
+        load_results = extended_loader.load_all_models()
+        model_info = extended_loader.get_loaded_models()
+
+        return Response(
+            {
+                "success": True,
+                "available_endpoints": {
+                    "all_models": "/api/prediction/all-models/",
+                    "xgboost": "/api/prediction/xgboost/",
+                    "lightgbm": "/api/prediction/lightgbm/",
+                },
+                "models": model_info,
+                "load_results": load_results,
+                "supported_model_types": ["sklearn", "spark"],
+                "sklearn_models": ["xgboost", "lightgbm"],
+                "spark_models": ["random_forest", "linear_regression"],
+                "note": "Extended service supports both sklearn and Spark ML models",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting all models info: {e}")
+        return Response(
+            {"error": f"Failed to get all models info: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

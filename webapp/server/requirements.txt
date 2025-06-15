@@ -26,9 +26,9 @@ httpx==0.25.0
 # Additional utilities
 python-dateutil==2.8.2
 
-# ML models (optional - will be handled gracefully if not available)
-# xgboost==1.7.6
-# lightgbm==4.1.0
+# ML models - Required for real prediction models
+xgboost
+lightgbm
 # catboost==1.2.2
 
 # Additional dependencies for analytics and processing

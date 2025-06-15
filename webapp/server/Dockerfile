@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     postgresql-client \
     libpq-dev \
-    default-jre \
+    default-jdk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

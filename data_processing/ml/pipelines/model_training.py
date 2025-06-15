@@ -555,31 +555,24 @@ class MLTrainer:
                 f"❌ Expected {expected_vector_size} features, got {len(numeric_feature_columns)} for VectorAssembler!"
             )
 
-        # Create feature vector using VectorAssembler
+        # Create feature vector using VectorAssembler (no standardization)
         assembler = VectorAssembler(
             inputCols=numeric_feature_columns,
-            outputCol="raw_features",  # Raw features before scaling
+            outputCol="features",  # Direct features without scaling
             handleInvalid="skip",  # Skip rows with invalid values
         )
 
-        # Add StandardScaler for feature normalization
-        scaler = StandardScaler(
-            inputCol="raw_features",
-            outputCol="features",  # Final scaled features
-            withStd=True,  # Scale to unit standard deviation
-            withMean=True,  # Center features around mean
-        )
-
-        # Create preprocessing pipeline with scaling
-        pipeline = Pipeline(stages=[assembler, scaler])
-
-        self.logger.logger.info("🎯 Added StandardScaler to preprocessing pipeline")
+        # No StandardScaler - use raw features directly for better interpretability
+        self.logger.logger.info("💡 Using raw features without standardization")
         self.logger.logger.info(
-            "   - Features will be centered (mean=0) and scaled (std=1)"
+            "   - This ensures consistency between training and prediction"
         )
         self.logger.logger.info(
-            "   - This should improve model performance significantly"
+            "   - XGBoost and LightGBM handle feature scaling internally"
         )
+
+        # Create preprocessing pipeline with just assembler
+        pipeline = Pipeline(stages=[assembler])
 
         # Fit and transform
         pipeline_model = pipeline.fit(df_clean)
@@ -603,13 +596,13 @@ class MLTrainer:
             f"✅ Data preprocessing completed: {record_count:,} records ready for training"
         )
         self.logger.logger.info(
-            "🎯 Features are standardized (mean=0, std=1) for better model performance"
+            "🎯 Features are raw (not standardized) for consistency with prediction service"
         )
 
         if record_count == 0:
             raise ValueError("❌ No valid records remaining after preprocessing!")
 
-        # Store preprocessing model (includes VectorAssembler + StandardScaler)
+        # Store preprocessing model (VectorAssembler only - no scaling)
         self._preprocessing_model = pipeline_model
 
         # Log scaling statistics for debugging

@@ -68,21 +68,59 @@ export interface PredictionResult {
 export interface Property {
   id: string;
   title: string;
+  description?: string;
   price: number;
   area: number;
-  bedroom: number;
-  bathroom: number;
-  address: string;
+  price_per_m2: number;
   province: string;
   district: string;
-  ward?: string;
-  street?: string;
-  latitude?: number;
-  longitude?: number;
-  images?: string[];
-  description?: string;
+  ward: string;
+  street: string;
+  latitude: number;
+  longitude: number;
+  bedroom: number;
+  bathroom: number;
+  floor_count: number;
+  house_type: string;
+  house_direction: string;
+  legal_status: string;
+  interior: string;
+  posted_date?: string | null;
+  source: string;
+  url: string;
+  price_formatted: string;
 }
 
+// Utility function to create full address from Property fields
+// Tạo địa chỉ đầy đủ từ các trường của Property: street, ward, district, province
+export const getPropertyAddress = (property: Property): string => {
+  const parts = [property.street, property.ward, property.district, property.province];
+  return parts.filter(part => part && part.trim() !== '').join(', ');
+};
+
+// Utility function to create short address (without street)
+// Tạo địa chỉ ngắn gọn (không bao gồm đường/phố): ward, district, province
+export const getPropertyShortAddress = (property: Property): string => {
+  const parts = [property.ward, property.district, property.province];
+  return parts.filter(part => part && part.trim() !== '').join(', ');
+};
+
+// Extended Property interface with computed address field
+// Interface Property mở rộng với trường address được tính toán
+export interface PropertyWithAddress extends Property {
+  address: string;
+  shortAddress: string;
+}
+
+// Function to convert Property to PropertyWithAddress
+// Hàm chuyển đổi Property thành PropertyWithAddress với address tự động tạo
+export const addAddressToProperty = (property: Property): PropertyWithAddress => {
+  return {
+    ...property,
+    address: getPropertyAddress(property),
+    shortAddress: getPropertyShortAddress(property),
+  };
+};
 export interface SearchFilters {
   province?: string;
   district?: string;
@@ -97,6 +135,9 @@ export interface SearchFilters {
   bathroom_max?: number;
   limit?: number;
   page?: number;
+  page_size?: number;
+  sort_by?: string;
+  sort_order?: string;
 }
 
 export interface ApiResponse<T> {
@@ -107,6 +148,15 @@ export interface ApiResponse<T> {
   next?: string;
   previous?: string;
   error?: string;
+  pagination?: {
+    page: number;
+    page_size: number;
+    total_count: number;
+    total_pages: number;
+    has_next: boolean;
+    has_previous: boolean;
+  };
+  search_params?: any;
 }
 
 // API Services
@@ -276,44 +326,44 @@ export const realEstateAPI = {
   // Analytics APIs
   analytics: {
     // Market overview
-    marketOverview: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/market-overview/');
+    marketOverview: async (params?: { province?: string; district?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/market-overview/', { params });
       return response.data;
     },
 
     // Price distribution
-    priceDistribution: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/price-distribution/');
+    priceDistribution: async (params?: { province?: string; district?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/price-distribution/', { params });
       return response.data;
     },
 
     // Property type stats
-    propertyTypeStats: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/property-type-stats/');
+    propertyTypeStats: async (params?: { province?: string; district?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/property-type-stats/', { params });
       return response.data;
     },
 
     // Location stats
-    locationStats: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/location-stats/');
+    locationStats: async (params?: { province?: string; district?: string; level?: string; limit?: number }): Promise<any> => {
+      const response = await apiClient.get('/analytics/location-stats/', { params });
       return response.data;
     },
 
     // Price trends
-    priceTrends: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/price-trends/');
+    priceTrends: async (params?: { province?: string; district?: string; months?: number }): Promise<any> => {
+      const response = await apiClient.get('/analytics/price-trends/', { params });
       return response.data;
     },
 
     // Area distribution
-    areaDistribution: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/area-distribution/');
+    areaDistribution: async (params?: { province?: string; district?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/area-distribution/', { params });
       return response.data;
     },
 
     // Dashboard summary
-    dashboardSummary: async (): Promise<any> => {
-      const response = await apiClient.get('/analytics/dashboard-summary/');
+    dashboardSummary: async (params?: { province?: string; district?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/dashboard-summary/', { params });
       return response.data;
     },
   },
