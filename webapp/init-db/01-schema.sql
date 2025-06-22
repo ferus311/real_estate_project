@@ -44,16 +44,18 @@ CREATE TABLE districts (
 CREATE TABLE wards (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
+    prefix VARCHAR(50),
     district_id INTEGER NOT NULL REFERENCES districts(id),
     code VARCHAR(10),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(name, district_id)
+    UNIQUE(name, prefix, district_id)
 );
 
 -- Streets
 CREATE TABLE streets (
     id SERIAL PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
+    prefix VARCHAR(50),
     ward_id INTEGER REFERENCES wards(id),
     district_id INTEGER REFERENCES districts(id),
     province_id INTEGER REFERENCES provinces(id),
@@ -61,36 +63,36 @@ CREATE TABLE streets (
 );
 
 -- Property Types (Optional - Gold already has house_type and house_type_code)
--- CREATE TABLE property_types (
---     id SERIAL PRIMARY KEY,
---     name VARCHAR(100) NOT NULL UNIQUE,
---     category VARCHAR(50), -- 'residential', 'commercial', 'land', etc.
---     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
--- );
+CREATE TABLE property_types (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    category VARCHAR(50), -- 'residential', 'commercial', 'land', etc.
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Legal Status (Optional - Gold already has legal_status and legal_status_code)
--- CREATE TABLE legal_statuses (
---     id SERIAL PRIMARY KEY,
---     name VARCHAR(100) NOT NULL UNIQUE,
---     description TEXT,
---     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
--- );
+CREATE TABLE legal_statuses (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- House Directions (Optional - Gold already has house_direction and house_direction_code)
--- CREATE TABLE house_directions (
---     id SERIAL PRIMARY KEY,
---     name VARCHAR(50) NOT NULL UNIQUE,
---     angle_degrees INTEGER, -- for sorting/filtering
---     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
--- );
+CREATE TABLE house_directions (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE,
+    angle_degrees INTEGER, -- for sorting/filtering
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- Interior Types (Optional - Gold already has interior and interior_code)
--- CREATE TABLE interior_types (
---     id SERIAL PRIMARY KEY,
---     name VARCHAR(100) NOT NULL UNIQUE,
---     level INTEGER, -- 1=basic, 2=medium, 3=luxury
---     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
--- );
+CREATE TABLE interior_types (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    level INTEGER, -- 1=basic, 2=medium, 3=luxury
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 --==============================================================================
 -- MAIN PROPERTIES TABLE
@@ -164,7 +166,7 @@ CREATE TABLE properties (
     processing_timestamp TIMESTAMP, -- from Gold: processing_timestamp
 
     -- Processing metadata (from Gold)
-    data_quality_score DECIMAL(3, 2), -- from Gold: data_quality_score
+    data_quality_score DECIMAL(5, 2), -- from Gold: data_quality_score
     processing_id VARCHAR(255), -- from Gold: processing_id
 
     -- Serving layer timestamps
@@ -238,44 +240,6 @@ CREATE TRIGGER update_properties_updated_at
     BEFORE UPDATE ON properties
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
-
---==============================================================================
--- SAMPLE DATA INSERTS (Optional)
---==============================================================================
-
--- Property Types
-INSERT INTO property_types (name, category) VALUES
-('Nhà riêng', 'residential'),
-('Chung cư', 'residential'),
-('Biệt thự', 'residential'),
-('Nhà mặt phố', 'commercial'),
-('Đất nền', 'land'),
-('Kho xưởng', 'commercial'),
-('Văn phòng', 'commercial');
-
--- Legal Status
-INSERT INTO legal_statuses (name, description) VALUES
-('Sổ đỏ/Sổ hồng', 'Có giấy chứng nhận quyền sử dụng đất'),
-('Hợp đồng mua bán', 'Có hợp đồng mua bán hợp lệ'),
-('Giấy tờ khác', 'Các loại giấy tờ pháp lý khác');
-
--- House Directions
-INSERT INTO house_directions (name, angle_degrees) VALUES
-('Đông', 90),
-('Tây', 270),
-('Nam', 180),
-('Bắc', 0),
-('Đông Nam', 135),
-('Đông Bắc', 45),
-('Tây Nam', 225),
-('Tây Bắc', 315);
-
--- Interior Types
-INSERT INTO interior_types (name, level) VALUES
-('Cơ bản', 1),
-('Đầy đủ', 2),
-('Cao cấp', 3),
-('Sang trọng', 3);
 
 --==============================================================================
 -- COMMENTS

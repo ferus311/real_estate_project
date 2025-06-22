@@ -640,7 +640,7 @@ export default function Home() {
                             <div className="mt-8 flex justify-center space-x-8">
                                 <Statistic
                                     title={<span className="text-blue-200">Tổng bất động sản</span>}
-                                    value={marketStats?.total_properties || 141629}
+                                    value={marketStats?.total_properties || "fake"}
                                     prefix={<HomeOutlined />}
                                     valueStyle={{ color: 'white' }}
                                 />

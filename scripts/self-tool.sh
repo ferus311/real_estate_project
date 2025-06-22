@@ -52,8 +52,6 @@ wait_for_service() {
 # Tạo thư mục volumes nếu chưa tồn tại
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/namenode
 mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode1
-# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode2
-# mkdir -p ${PROJECT_DIR}/docker/volumes/hdfs/datanode3
 mkdir -p ${PROJECT_DIR}/docker/volumes/crawler/checkpoint
 
 
@@ -126,6 +124,11 @@ check_error "Không thể khởi động Spark"
 # Đợi Spark khởi động
 wait_for_service "Spark" "8181" "localhost" 120
 
+# Khởi động website
+echo -e "${BLUE}[INFO]${NC} Khởi động website..."
+docker compose -f ${PROJECT_DIR}/docker/yml/website.yml up -d
+check_error "Không thể khởi động website"
+
 # Khởi động crawler shell
 echo -e "${BLUE}[INFO]${NC} Thiết lập các image crawler và processor"
 docker compose -f ${PROJECT_DIR}/docker/yml/crawler.yml build realestate-crawler-service
@@ -137,4 +140,5 @@ echo -e "${GREEN}[SUCCESS]${NC} Tất cả các dịch vụ đã được khởi
 echo -e "${GREEN}[INFO]${NC} Airflow UI: http://localhost:8080 (admin/admin)"
 echo -e "${GREEN}[INFO]${NC} HDFS UI: http://localhost:9870"
 echo -e "${GREEN}[INFO]${NC} Kafka UI: http://localhost:8282"
+echo -e "${GREEN}[INFO]${NC} Website: http://localhost:3000"
 echo -e "${GREEN}[INFO]${NC} Để truy cập crawler shell: docker exec -it crawler-shell bash"

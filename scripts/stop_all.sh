@@ -19,7 +19,7 @@ docker compose -f yml/kafka.yml down
 echo "Dừng HDFS..."
 docker compose -f yml/hdfs.yml down
 
-cd ../webapp
-docker compose down 
+echo "Dừng website..."
+docker compose -f yml/website.yml down
 
 echo "===== ĐÃ DỪNG TOÀN BỘ HỆ THỐNG ====="
