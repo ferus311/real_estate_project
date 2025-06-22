@@ -11,3 +11,5 @@ xgboost
 lightgbm
 catboost
 joblib
+# Thêm PostgreSQL driver cho kết nối database
+psycopg2-binary>=2.9.6

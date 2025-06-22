@@ -117,7 +117,7 @@ wait_for_service "Airflow webserver" "8080" "localhost" 180
 # Khởi động Spark
 echo -e "${BLUE}[INFO]${NC} Khởi động Spark..."
 docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master
-sleep 5
+sleep 3
 docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-worker-1 spark-processor
 # docker compose -f ${PROJECT_DIR}/docker/yml/spark.yml up -d spark-master spark-worker-1 spark-processor jupyter
 check_error "Không thể khởi động Spark"

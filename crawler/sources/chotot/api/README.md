@@ -1,38 +1,6 @@
 # Crawler Chợ Tốt API
 
-Script này dùng để crawl dữ liệu bất động sản từ Chợ Tốt và lưu kết quả vào file CSV.
-
-## Cài đặt
-
-Đảm bảo bạn đã cài đặt các thư viện cần thiết:
-
-```bash
-pip install aiohttp asyncio
-```
-
-## Cách sử dụng
-
-### Chạy với tham số mặc định
-
-```bash
-cd /path/to/real_estate_project
-python crawler/sources/chotot/api/run_local_crawler.py
-```
-
-Script sẽ crawl 2 trang đầu tiên và lấy chi tiết tối đa 10 tin đăng.
-
-### Tùy chỉnh tham số
-
-```bash
-python crawler/sources/chotot/api/run_local_crawler.py --max-pages 3 --max-items 20 --output data.csv
-```
-
-### Các tham số
-
--   `--max-pages`: Số trang tối đa cần crawl (mặc định: 2)
--   `--max-items`: Số lượng tin chi tiết tối đa cần crawl (mặc định: 10)
--   `--output`: Đường dẫn file CSV output (nếu không điền sẽ tự tạo tên file với timestamp)
--   `--category`: ID danh mục (mặc định: 1000 - Bất động sản)
+Script này dùng để crawl dữ liệu bất động sản từ Chợ Tốt
 
 ## Danh mục phổ biến
 
@@ -49,8 +17,6 @@ python crawler/sources/chotot/api/run_local_crawler.py --max-pages 3 --max-items
 -   2000: Cho thuê
 
 ## Ví dụ kết quả
-
-Output là file CSV chứa các thông tin quan trọng về tin đăng bất động sản. Ví dụ:
 
 -   listing_id: ID của tin đăng
 -   title: Tiêu đề tin đăng

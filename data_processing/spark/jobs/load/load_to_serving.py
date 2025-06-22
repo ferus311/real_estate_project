@@ -81,7 +81,10 @@ def load_to_serving_layer(
             return
 
         logger.logger.info(f"🔍 Applying deduplication to {initial_count:,} records...")
-        deduplicated_df = apply_load_deduplication(serving_df, postgres_config)
+        # Sử dụng window 90 ngày để phát hiện trùng lặp tốt hơn
+        deduplicated_df = apply_load_deduplication(
+            serving_df, postgres_config, days_window=90
+        )
         final_count = deduplicated_df.count()
 
         logger.logger.info(
@@ -229,7 +232,18 @@ def transform_for_serving(gold_df: DataFrame, logger):
 
 
 def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
-    """Load dữ liệu vào PostgreSQL"""
+    """
+    Load dữ liệu vào PostgreSQL sử dụng staging table và upsert để tránh lỗi trùng lặp
+
+    Quy trình cải thiến:
+    1. Tạo bảng staging (properties_staging) với cấu trúc giống bảng chính
+    2. Ghi dữ liệu vào bảng staging
+    3. Thực hiện UPSERT từ staging vào bảng chính với logic cập nhật thông minh:
+       - Chỉ cập nhật khi bản ghi mới có chất lượng tốt hơn (data_quality_score cao hơn)
+       - Hoặc cùng chất lượng nhưng mới hơn (processing_timestamp gần đây hơn)
+    4. Xóa bảng staging sau khi hoàn thành
+    5. Xử lý lỗi và rollback toàn diện
+    """
 
     if postgres_config is None:
         postgres_config = {
@@ -241,7 +255,14 @@ def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
 
     serving_df = serving_df.coalesce(4)
 
-    write_options = {
+    # Parse PostgreSQL connection details
+    url_parts = postgres_config["url"].replace("jdbc:postgresql://", "").split(":")
+    host = url_parts[0]
+    port = url_parts[1].split("/")[0]
+    database = url_parts[1].split("/")[1]
+
+    # Base JDBC options
+    base_options = {
         "url": postgres_config["url"],
         "user": postgres_config["user"],
         "password": postgres_config["password"],
@@ -250,16 +271,244 @@ def load_to_postgres(serving_df: DataFrame, postgres_config: dict, logger):
         "numPartitions": "4",
         "isolationLevel": "READ_COMMITTED",
         "stringtype": "unspecified",
-        "dbtable": "properties",
     }
 
     try:
-        serving_df.write.format("jdbc").options(**write_options).mode("append").save()
+        import psycopg2
+        from psycopg2 import sql
+
+        total_records = serving_df.count()
         logger.logger.info(
-            f"✅ Successfully appended {serving_df.count():,} records to PostgreSQL"
+            f"🔄 Loading {total_records:,} records to PostgreSQL using improved staging table approach..."
         )
+
+        # Bước 1: Tạo và ghi vào bảng tạm (staging)
+        logger.logger.info("Bước 1: Chuẩn bị và ghi vào bảng staging...")
+
+        conn = None
+        cursor = None
+        try:
+            # Kết nối để chuẩn bị bảng tạm với timeout
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=postgres_config["user"],
+                password=postgres_config["password"],
+                connect_timeout=30,  # Thêm timeout để tránh treo khi kết nối
+            )
+            cursor = conn.cursor()
+
+            # Tạo bảng tạm nếu chưa tồn tại hoặc xóa dữ liệu nếu đã tồn tại
+            cursor.execute("DROP TABLE IF EXISTS properties_staging")
+
+            # Tạo bảng tạm với cùng cấu trúc như bảng chính
+            cursor.execute(
+                """
+            CREATE TABLE properties_staging (LIKE properties INCLUDING ALL)
+            """
+            )
+            conn.commit()
+            logger.logger.info("✅ Bảng staging đã được tạo thành công")
+
+        except Exception as e:
+            logger.logger.error(f"❌ Lỗi khi tạo bảng staging: {str(e)}")
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+        # Ghi dữ liệu vào bảng tạm
+        try:
+            staging_options = base_options.copy()
+            staging_options["dbtable"] = "properties_staging"
+
+            # Thêm thông số để cải thiện hiệu suất và giảm lỗi
+            staging_options["numPartitions"] = "8"  # Tăng số lượng partition
+            staging_options["batchsize"] = "1000"  # Giảm kích thước batch để tránh OOM
+
+            # Ghi dữ liệu vào staging table
+            serving_df.write.format("jdbc").options(**staging_options).mode(
+                "append"
+            ).save()
+            logger.logger.info(f"✅ Đã ghi {total_records:,} bản ghi vào bảng staging")
+
+        except Exception as e:
+            logger.logger.error(f"❌ Lỗi khi ghi dữ liệu vào bảng staging: {str(e)}")
+            # Khôi phục bằng cách xóa bảng staging
+            try:
+                conn = psycopg2.connect(
+                    host=host,
+                    port=port,
+                    database=database,
+                    user=postgres_config["user"],
+                    password=postgres_config["password"],
+                )
+                cursor = conn.cursor()
+                cursor.execute("DROP TABLE IF EXISTS properties_staging")
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except:
+                pass  # Bỏ qua lỗi trong quá trình dọn dẹp
+            raise
+
+        # Bước 2: Thực hiện UPSERT từ bảng tạm sang bảng chính
+        logger.logger.info("Bước 2: Thực hiện UPSERT từ bảng staging vào bảng chính...")
+
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=postgres_config["user"],
+                password=postgres_config["password"],
+                connect_timeout=30,
+            )
+            # Chế độ transaction tự động
+            conn.autocommit = False
+            cursor = conn.cursor()
+
+            # Thiết lập statement timeout lớn hơn
+            cursor.execute("SET statement_timeout = '1800000'")  # 30 phút
+
+            # Lấy thống kê trước khi upsert
+            cursor.execute("SELECT COUNT(*) FROM properties")
+            count_before = cursor.fetchone()[0]
+
+            # Thực hiện UPSERT với logic cập nhật cải tiến
+            # Sử dụng kiến trúc UPSERT theo khuyến nghị của PostgreSQL
+            upsert_query = """
+            INSERT INTO properties
+            SELECT * FROM properties_staging
+            ON CONFLICT (id)
+            DO UPDATE SET
+                -- Cập nhật tất cả các trường
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                url = EXCLUDED.url,
+                source = EXCLUDED.source,
+                location = EXCLUDED.location,
+                data_type = EXCLUDED.data_type,
+                province = EXCLUDED.province,
+                district = EXCLUDED.district,
+                ward = EXCLUDED.ward,
+                street = EXCLUDED.street,
+                province_id = EXCLUDED.province_id,
+                district_id = EXCLUDED.district_id,
+                ward_id = EXCLUDED.ward_id,
+                street_id = EXCLUDED.street_id,
+                latitude = EXCLUDED.latitude,
+                longitude = EXCLUDED.longitude,
+                price = EXCLUDED.price,
+                area = EXCLUDED.area,
+                price_per_m2 = EXCLUDED.price_per_m2,
+                bedroom = EXCLUDED.bedroom,
+                bathroom = EXCLUDED.bathroom,
+                floor_count = EXCLUDED.floor_count,
+                width = EXCLUDED.width,
+                length = EXCLUDED.length,
+                living_size = EXCLUDED.living_size,
+                facade_width = EXCLUDED.facade_width,
+                road_width = EXCLUDED.road_width,
+                house_direction = EXCLUDED.house_direction,
+                house_direction_code = EXCLUDED.house_direction_code,
+                legal_status = EXCLUDED.legal_status,
+                legal_status_code = EXCLUDED.legal_status_code,
+                interior = EXCLUDED.interior,
+                interior_code = EXCLUDED.interior_code,
+                house_type = EXCLUDED.house_type,
+                house_type_code = EXCLUDED.house_type_code,
+                posted_date = EXCLUDED.posted_date,
+                crawl_timestamp = EXCLUDED.crawl_timestamp,
+                processing_timestamp = EXCLUDED.processing_timestamp,
+                data_quality_score = EXCLUDED.data_quality_score,
+                processing_id = EXCLUDED.processing_id,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE
+                -- Chỉ cập nhật khi dữ liệu mới tốt hơn hoặc mới hơn
+                EXCLUDED.data_quality_score > properties.data_quality_score
+                OR (EXCLUDED.data_quality_score >= properties.data_quality_score
+                    AND EXCLUDED.processing_timestamp > properties.processing_timestamp)
+            """
+            cursor.execute(upsert_query)
+
+            # Lấy kết quả sau khi upsert
+            cursor.execute("SELECT COUNT(*) FROM properties")
+            count_after = cursor.fetchone()[0]
+
+            # Tính toán số bản ghi đã thêm mới
+            new_records = count_after - count_before
+
+            # Tính toán số bản ghi đã cập nhật
+            cursor.execute("SELECT COUNT(*) FROM properties_staging")
+            staging_count = cursor.fetchone()[0]
+            updated_records = staging_count - new_records
+
+            # Commit transaction khi tất cả đã thành công
+            conn.commit()
+
+            logger.logger.info(f"📊 Kết quả UPSERT:")
+            logger.logger.info(f"   ➕ Đã thêm mới: {new_records:,} bản ghi")
+            logger.logger.info(f"   🔄 Đã cập nhật: {updated_records:,} bản ghi")
+            logger.logger.info(f"   📊 Tổng bản ghi hiện tại: {count_after:,}")
+
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                    logger.logger.info("✅ Transaction đã được rollback sau lỗi")
+                except:
+                    logger.logger.error("❌ Không thể rollback transaction sau lỗi")
+            logger.logger.error(f"❌ Lỗi khi thực hiện UPSERT: {str(e)}")
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+        # Bước 3: Dọn dẹp - xóa bảng tạm
+        logger.logger.info("Bước 3: Dọn dẹp bảng tạm...")
+
+        try:
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=postgres_config["user"],
+                password=postgres_config["password"],
+            )
+            cursor = conn.cursor()
+            cursor.execute("DROP TABLE IF EXISTS properties_staging")
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.logger.info("✅ Đã xóa bảng staging")
+
+        except Exception as e:
+            logger.logger.error(f"⚠️ Cảnh báo: Không thể xóa bảng staging: {str(e)}")
+            # Tiếp tục thực thi ngay cả khi quá trình dọn dẹp thất bại
+
+        logger.logger.info(f"✅ Hoàn thành quá trình load dữ liệu vào PostgreSQL")
+        return True
+
     except Exception as e:
-        logger.logger.error(f"❌ PostgreSQL loading failed: {e}")
+        logger.logger.error(f"❌ PostgreSQL loading failed: {str(e)}")
+        # In traceback để debug chi tiết hơn
+        import traceback
+
+        logger.logger.error(traceback.format_exc())
+        # Mọi lỗi khác không được xử lý sẽ được chuyển lên cấp cao hơn
         raise
 
 

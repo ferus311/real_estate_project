@@ -90,7 +90,10 @@ def unified_load_pipeline(
                 f"🔍 Applying deduplication to {initial_count:,} records..."
             )
 
-            deduplicated_df = apply_load_deduplication(serving_df, postgres_config)
+            # Sử dụng window 90 ngày để phát hiện trùng lặp tốt hơn
+            deduplicated_df = apply_load_deduplication(
+                serving_df, postgres_config, days_window=90
+            )
             final_count = deduplicated_df.count()
 
             logger.logger.info(

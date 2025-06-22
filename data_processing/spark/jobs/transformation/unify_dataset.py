@@ -56,6 +56,254 @@ from common.config.spark_config import create_spark_session
 from common.utils.duplicate_detection import apply_unify_deduplication
 
 
+def apply_deduplication(unified_df: DataFrame, logger: SparkJobLogger) -> DataFrame:
+    """
+    Thực hiện phát hiện và loại bỏ trùng lặp dữ liệu bất động sản
+
+    Args:
+        unified_df: DataFrame đã được hợp nhất
+        logger: SparkJobLogger để ghi log
+
+    Returns:
+        DataFrame đã được loại bỏ trùng lặp
+    """
+    logger.logger.info("🔍 Bắt đầu phát hiện và loại bỏ trùng lặp...")
+
+    # Log count trước khi deduplication
+    pre_dedup_count = unified_df.count()
+    logger.logger.info(f"📊 Records trước deduplication: {pre_dedup_count:,}")
+
+    # Apply comprehensive deduplication
+    unified_df = apply_unify_deduplication(unified_df)
+
+    # Log kết quả deduplication
+    post_dedup_count = unified_df.count()
+    duplicates_removed = pre_dedup_count - post_dedup_count
+    logger.logger.info(f"✅ Deduplication hoàn thành:")
+    logger.logger.info(f"   📤 Records sau deduplication: {post_dedup_count:,}")
+    logger.logger.info(f"   🗑️ Duplicates loại bỏ: {duplicates_removed:,}")
+    logger.logger.info(
+        f"   📉 Reduction rate: {duplicates_removed/pre_dedup_count*100:.1f}%"
+    )
+
+    return unified_df
+
+
+def filter_invalid_province(unified_df: DataFrame, logger: SparkJobLogger) -> DataFrame:
+    """
+    Lọc bỏ các bản ghi không có province_id hợp lệ (province_id = -1)
+
+    Args:
+        unified_df: DataFrame đã được hợp nhất
+        logger: SparkJobLogger để ghi log
+
+    Returns:
+        DataFrame đã được lọc bỏ các bản ghi không có province hợp lệ
+    """
+    pre_province_filter_count = unified_df.count()
+    logger.logger.info(f"🏙️ Bắt đầu lọc bản ghi có province_id = -1...")
+
+    # Chỉ cần loại bỏ các bản ghi có province_id = -1
+    unified_df = unified_df.filter(col("province_id") != -1)
+
+    post_province_filter_count = unified_df.count()
+    province_missing_removed = pre_province_filter_count - post_province_filter_count
+
+    logger.logger.info(f"✅ Lọc province hoàn thành:")
+    logger.logger.info(f"   📤 Records sau khi lọc: {post_province_filter_count:,}")
+    logger.logger.info(
+        f"   🗑️ Records không có province loại bỏ: {province_missing_removed:,}"
+    )
+    logger.logger.info(
+        f"   📉 Reduction rate: {province_missing_removed/pre_province_filter_count*100:.1f}%"
+    )
+
+    return unified_df
+
+
+def apply_deduplication_and_filter_province(
+    unified_df: DataFrame, logger: SparkJobLogger
+) -> DataFrame:
+    """
+    Thực hiện phát hiện và loại bỏ trùng lặp, đồng thời lọc bỏ các bản ghi không có province
+
+    Args:
+        unified_df: DataFrame đã được hợp nhất
+        logger: SparkJobLogger để ghi log
+
+    Returns:
+        DataFrame đã được loại bỏ trùng lặp và lọc bản ghi không có province
+    """
+    # Step 1: Apply deduplication
+    unified_df = apply_deduplication(unified_df, logger)
+
+    # Step 2: Filter invalid province
+    unified_df = filter_invalid_province(unified_df, logger)
+
+    return unified_df
+
+
+def calculate_comprehensive_statistics(
+    unified_df: DataFrame, logger: SparkJobLogger
+) -> None:
+    """
+    Tính toán thống kê toàn diện sau khi unify và lọc dữ liệu
+
+    Args:
+        unified_df: DataFrame đã được xử lý
+        logger: SparkJobLogger để ghi log
+    """
+    logger.logger.info("🎯 Tính thống kê toàn diện cho dữ liệu đã unify...")
+
+    # Cache để tối ưu performance
+    unified_df.cache()
+
+    total_records = unified_df.count()
+    logger.logger.info(f"📊 TỔNG KẾT UNIFIED DATASET:")
+    logger.logger.info(f"   Tổng số records: {total_records:,}")
+
+    # Thống kê theo nguồn dữ liệu
+    source_stats = unified_df.groupBy("source").count().collect()
+    logger.logger.info(f"📋 THỐNG KÊ THEO NGUỒN DỮ LIỆU:")
+    for row in source_stats:
+        logger.logger.info(f"   {row['source']}: {row['count']:,} records")
+
+    # Thống kê theo loại property
+    property_stats = unified_df.groupBy("property_type").count().collect()
+    logger.logger.info(f"🏠 THỐNG KÊ THEO LOẠI BẤT ĐỘNG SẢN:")
+    for row in property_stats:
+        logger.logger.info(f"   {row['property_type']}: {row['count']:,} records")
+
+    # Thống kê theo quality level
+    quality_stats = unified_df.groupBy("quality_level").count().collect()
+    logger.logger.info(f"⭐ THỐNG KÊ CHẤT LƯỢNG DỮ LIỆU:")
+    for row in quality_stats:
+        logger.logger.info(f"   {row['quality_level']}: {row['count']:,} records")
+
+    # Thống kê missing data
+    missing_stats = unified_df.select(
+        count("*").alias("total"),
+        spark_sum(when(col("price").isNull(), 1).otherwise(0)).alias("missing_price"),
+        spark_sum(when(col("area").isNull(), 1).otherwise(0)).alias("missing_area"),
+        spark_sum(when(col("bedroom").isNull(), 1).otherwise(0)).alias(
+            "missing_bedroom"
+        ),
+        spark_sum(when(col("bathroom").isNull(), 1).otherwise(0)).alias(
+            "missing_bathroom"
+        ),
+        spark_sum(
+            when(col("latitude").isNull() | col("longitude").isNull(), 1).otherwise(0)
+        ).alias("missing_coordinates"),
+        spark_sum(
+            when(col("location").isNull() | (col("location") == ""), 1).otherwise(0)
+        ).alias("missing_location"),
+    ).collect()[0]
+
+    logger.logger.info(f"❌ THỐNG KÊ DỮ LIỆU THIẾU:")
+    logger.logger.info(
+        f"   Missing price: {missing_stats['missing_price']:,} ({missing_stats['missing_price']/total_records*100:.1f}%)"
+    )
+    logger.logger.info(
+        f"   Missing area: {missing_stats['missing_area']:,} ({missing_stats['missing_area']/total_records*100:.1f}%)"
+    )
+    logger.logger.info(
+        f"   Missing bedroom: {missing_stats['missing_bedroom']:,} ({missing_stats['missing_bedroom']/total_records*100:.1f}%)"
+    )
+    logger.logger.info(
+        f"   Missing bathroom: {missing_stats['missing_bathroom']:,} ({missing_stats['missing_bathroom']/total_records*100:.1f}%)"
+    )
+    logger.logger.info(
+        f"   Missing coordinates: {missing_stats['missing_coordinates']:,} ({missing_stats['missing_coordinates']/total_records*100:.1f}%)"
+    )
+    logger.logger.info(
+        f"   Missing location: {missing_stats['missing_location']:,} ({missing_stats['missing_location']/total_records*100:.1f}%)"
+    )
+
+    # Thống kê giá trị
+    # Lọc dữ liệu có giá hợp lệ để tính stats
+    valid_price_df = unified_df.filter(col("price").isNotNull() & (col("price") > 0))
+    valid_area_df = unified_df.filter(col("area").isNotNull() & (col("area") > 0))
+
+    if valid_price_df.count() > 0:
+        price_stats = valid_price_df.select(
+            avg("price").alias("avg_price"),
+            stddev("price").alias("stddev_price"),
+            spark_min("price").alias("min_price"),
+            spark_max("price").alias("max_price"),
+            percentile_approx("price", 0.5).alias("median_price"),
+        ).collect()[0]
+
+        logger.logger.info(
+            f"💰 THỐNG KÊ GIÁ ({valid_price_df.count():,} records có giá hợp lệ):"
+        )
+        logger.logger.info(
+            f"   Giá trung bình: {price_stats['avg_price']/1_000_000_000:.2f} tỷ VND"
+        )
+        logger.logger.info(
+            f"   Giá median: {price_stats['median_price']/1_000_000_000:.2f} tỷ VND"
+        )
+        logger.logger.info(
+            f"   Giá min: {price_stats['min_price']/1_000_000:.0f} triệu VND"
+        )
+        logger.logger.info(
+            f"   Giá max: {price_stats['max_price']/1_000_000_000:.1f} tỷ VND"
+        )
+        logger.logger.info(
+            f"   Độ lệch chuẩn: {price_stats['stddev_price']/1_000_000_000:.2f} tỷ VND"
+        )
+
+    if valid_area_df.count() > 0:
+        area_stats = valid_area_df.select(
+            avg("area").alias("avg_area"),
+            stddev("area").alias("stddev_area"),
+            spark_min("area").alias("min_area"),
+            spark_max("area").alias("max_area"),
+            percentile_approx("area", 0.5).alias("median_area"),
+        ).collect()[0]
+
+        logger.logger.info(
+            f"📐 THỐNG KÊ DIỆN TÍCH ({valid_area_df.count():,} records có diện tích hợp lệ):"
+        )
+        logger.logger.info(f"   Diện tích trung bình: {area_stats['avg_area']:.1f} m²")
+        logger.logger.info(f"   Diện tích median: {area_stats['median_area']:.1f} m²")
+        logger.logger.info(f"   Diện tích min: {area_stats['min_area']:.0f} m²")
+        logger.logger.info(f"   Diện tích max: {area_stats['max_area']:.0f} m²")
+        logger.logger.info(f"   Độ lệch chuẩn: {area_stats['stddev_area']:.1f} m²")
+
+    # Thống kê data quality score
+    score_stats = unified_df.select(
+        avg("data_quality_score").alias("avg_score"),
+        stddev("data_quality_score").alias("stddev_score"),
+        spark_min("data_quality_score").alias("min_score"),
+        spark_max("data_quality_score").alias("max_score"),
+        percentile_approx("data_quality_score", 0.5).alias("median_score"),
+    ).collect()[0]
+
+    logger.logger.info(f"🎯 THỐNG KÊ ĐIỂM CHẤT LƯỢNG (scale 0-100):")
+    logger.logger.info(f"   Điểm trung bình: {score_stats['avg_score']:.1f}")
+    logger.logger.info(f"   Điểm median: {score_stats['median_score']:.1f}")
+    logger.logger.info(f"   Điểm min: {score_stats['min_score']:.0f}")
+    logger.logger.info(f"   Điểm max: {score_stats['max_score']:.0f}")
+    logger.logger.info(f"   Độ lệch chuẩn: {score_stats['stddev_score']:.1f}")
+
+    # Thống kê theo tỉnh/thành phố (top 10)
+    if "province" in unified_df.columns:
+        province_stats = (
+            unified_df.filter(col("province").isNotNull() & (col("province") != ""))
+            .groupBy("province")
+            .count()
+            .orderBy(col("count").desc())
+            .limit(10)
+            .collect()
+        )
+
+        logger.logger.info(f"🌍 TOP 10 TỈNH/THÀNH PHỐ:")
+        for row in province_stats:
+            logger.logger.info(f"   {row['province']}: {row['count']:,} records")
+
+    logger.logger.info("✅ Hoàn thành thống kê toàn diện!")
+
+
 def unify_property_data(
     spark: SparkSession, input_date=None, property_type="house"
 ) -> DataFrame:
@@ -289,205 +537,30 @@ def unify_property_data(
 
         logger.logger.info("Hoàn thành tính điểm chất lượng thống nhất!")
 
-        # === Duplication Detection ===
-        logger.logger.info("🔍 Bắt đầu phát hiện và loại bỏ trùng lặp...")
+        # Áp dụng deduplication và lọc bỏ các bản ghi không có province
+        pre_dedup_count = unified_df.count()  # Lưu lại số lượng trước khi deduplicate
+        unified_df = apply_deduplication_and_filter_province(unified_df, logger)
 
-        # Log count trước khi deduplication
-        pre_dedup_count = unified_df.count()
-        logger.logger.info(f"📊 Records trước deduplication: {pre_dedup_count:,}")
+        # Tính toán thống kê toàn diện
+        # calculate_comprehensive_statistics(unified_df, logger)
 
-        # Apply comprehensive deduplication
-        unified_df = apply_unify_deduplication(unified_df)
+        # Log thông tin sau khi hợp nhất
+        # logger.log_dataframe_info(unified_df, "unified_data_final")
 
-        # Log kết quả deduplication
-        post_dedup_count = unified_df.count()
-        duplicates_removed = pre_dedup_count - post_dedup_count
-        logger.logger.info(f"✅ Deduplication hoàn thành:")
-        logger.logger.info(f"   📤 Records sau deduplication: {post_dedup_count:,}")
-        logger.logger.info(f"   🗑️ Duplicates loại bỏ: {duplicates_removed:,}")
-        logger.logger.info(
-            f"   📉 Reduction rate: {duplicates_removed/pre_dedup_count*100:.1f}%"
-        )
-
-        # === THỐNG KÊ TOÀN DIỆN SAU KHI UNIFY ===
-        logger.logger.info("🎯 Tính thống kê toàn diện cho dữ liệu đã unify...")
-
-        # Cache để tối ưu performance
-        unified_df.cache()
-
-        total_records = unified_df.count()
-        logger.logger.info(f"📊 TỔNG KẾT UNIFIED DATASET:")
-        logger.logger.info(f"   Tổng số records: {total_records:,}")
-
-        # Thống kê theo nguồn dữ liệu
-        source_stats = unified_df.groupBy("source").count().collect()
-        logger.logger.info(f"📋 THỐNG KÊ THEO NGUỒN DỮ LIỆU:")
-        for row in source_stats:
-            logger.logger.info(f"   {row['source']}: {row['count']:,} records")
-
-        # Thống kê theo loại property
-        property_stats = unified_df.groupBy("property_type").count().collect()
-        logger.logger.info(f"🏠 THỐNG KÊ THEO LOẠI BẤT ĐỘNG SẢN:")
-        for row in property_stats:
-            logger.logger.info(f"   {row['property_type']}: {row['count']:,} records")
-
-        # Thống kê theo quality level
-        quality_stats = unified_df.groupBy("quality_level").count().collect()
-        logger.logger.info(f"⭐ THỐNG KÊ CHẤT LƯỢNG DỮ LIỆU:")
-        for row in quality_stats:
-            logger.logger.info(f"   {row['quality_level']}: {row['count']:,} records")
-
-        # Thống kê missing data
-        missing_stats = unified_df.select(
-            count("*").alias("total"),
-            spark_sum(when(col("price").isNull(), 1).otherwise(0)).alias(
-                "missing_price"
-            ),
-            spark_sum(when(col("area").isNull(), 1).otherwise(0)).alias("missing_area"),
-            spark_sum(when(col("bedroom").isNull(), 1).otherwise(0)).alias(
-                "missing_bedroom"
-            ),
-            spark_sum(when(col("bathroom").isNull(), 1).otherwise(0)).alias(
-                "missing_bathroom"
-            ),
-            spark_sum(
-                when(col("latitude").isNull() | col("longitude").isNull(), 1).otherwise(
-                    0
-                )
-            ).alias("missing_coordinates"),
-            spark_sum(
-                when(col("location").isNull() | (col("location") == ""), 1).otherwise(0)
-            ).alias("missing_location"),
-        ).collect()[0]
-
-        logger.logger.info(f"❌ THỐNG KÊ DỮ LIỆU THIẾU:")
-        logger.logger.info(
-            f"   Missing price: {missing_stats['missing_price']:,} ({missing_stats['missing_price']/total_records*100:.1f}%)"
-        )
-        logger.logger.info(
-            f"   Missing area: {missing_stats['missing_area']:,} ({missing_stats['missing_area']/total_records*100:.1f}%)"
-        )
-        logger.logger.info(
-            f"   Missing bedroom: {missing_stats['missing_bedroom']:,} ({missing_stats['missing_bedroom']/total_records*100:.1f}%)"
-        )
-        logger.logger.info(
-            f"   Missing bathroom: {missing_stats['missing_bathroom']:,} ({missing_stats['missing_bathroom']/total_records*100:.1f}%)"
-        )
-        logger.logger.info(
-            f"   Missing coordinates: {missing_stats['missing_coordinates']:,} ({missing_stats['missing_coordinates']/total_records*100:.1f}%)"
-        )
-        logger.logger.info(
-            f"   Missing location: {missing_stats['missing_location']:,} ({missing_stats['missing_location']/total_records*100:.1f}%)"
-        )
-
-        # Thống kê giá trị
-        # Lọc dữ liệu có giá hợp lệ để tính stats
-        valid_price_df = unified_df.filter(
-            col("price").isNotNull() & (col("price") > 0)
-        )
-        valid_area_df = unified_df.filter(col("area").isNotNull() & (col("area") > 0))
-
-        if valid_price_df.count() > 0:
-            price_stats = valid_price_df.select(
-                avg("price").alias("avg_price"),
-                stddev("price").alias("stddev_price"),
-                spark_min("price").alias("min_price"),
-                spark_max("price").alias("max_price"),
-                percentile_approx("price", 0.5).alias("median_price"),
-            ).collect()[0]
-
-            logger.logger.info(
-                f"💰 THỐNG KÊ GIÁ ({valid_price_df.count():,} records có giá hợp lệ):"
-            )
-            logger.logger.info(
-                f"   Giá trung bình: {price_stats['avg_price']/1_000_000_000:.2f} tỷ VND"
-            )
-            logger.logger.info(
-                f"   Giá median: {price_stats['median_price']/1_000_000_000:.2f} tỷ VND"
-            )
-            logger.logger.info(
-                f"   Giá min: {price_stats['min_price']/1_000_000:.0f} triệu VND"
-            )
-            logger.logger.info(
-                f"   Giá max: {price_stats['max_price']/1_000_000_000:.1f} tỷ VND"
-            )
-            logger.logger.info(
-                f"   Độ lệch chuẩn: {price_stats['stddev_price']/1_000_000_000:.2f} tỷ VND"
-            )
-
-        if valid_area_df.count() > 0:
-            area_stats = valid_area_df.select(
-                avg("area").alias("avg_area"),
-                stddev("area").alias("stddev_area"),
-                spark_min("area").alias("min_area"),
-                spark_max("area").alias("max_area"),
-                percentile_approx("area", 0.5).alias("median_area"),
-            ).collect()[0]
-
-            logger.logger.info(
-                f"📐 THỐNG KÊ DIỆN TÍCH ({valid_area_df.count():,} records có diện tích hợp lệ):"
-            )
-            logger.logger.info(
-                f"   Diện tích trung bình: {area_stats['avg_area']:.1f} m²"
-            )
-            logger.logger.info(
-                f"   Diện tích median: {area_stats['median_area']:.1f} m²"
-            )
-            logger.logger.info(f"   Diện tích min: {area_stats['min_area']:.0f} m²")
-            logger.logger.info(f"   Diện tích max: {area_stats['max_area']:.0f} m²")
-            logger.logger.info(f"   Độ lệch chuẩn: {area_stats['stddev_area']:.1f} m²")
-
-        # Thống kê data quality score
-        score_stats = unified_df.select(
-            avg("data_quality_score").alias("avg_score"),
-            stddev("data_quality_score").alias("stddev_score"),
-            spark_min("data_quality_score").alias("min_score"),
-            spark_max("data_quality_score").alias("max_score"),
-            percentile_approx("data_quality_score", 0.5).alias("median_score"),
-        ).collect()[0]
-
-        logger.logger.info(f"🎯 THỐNG KÊ ĐIỂM CHẤT LƯỢNG (scale 0-100):")
-        logger.logger.info(f"   Điểm trung bình: {score_stats['avg_score']:.1f}")
-        logger.logger.info(f"   Điểm median: {score_stats['median_score']:.1f}")
-        logger.logger.info(f"   Điểm min: {score_stats['min_score']:.0f}")
-        logger.logger.info(f"   Điểm max: {score_stats['max_score']:.0f}")
-        logger.logger.info(f"   Độ lệch chuẩn: {score_stats['stddev_score']:.1f}")
-
-        # Thống kê theo tỉnh/thành phố (top 10)
-        if "province" in unified_df.columns:
-            province_stats = (
-                unified_df.filter(col("province").isNotNull() & (col("province") != ""))
-                .groupBy("province")
-                .count()
-                .orderBy(col("count").desc())
-                .limit(10)
-                .collect()
-            )
-
-            logger.logger.info(f"🌍 TOP 10 TỈNH/THÀNH PHỐ:")
-            for row in province_stats:
-                logger.logger.info(f"   {row['province']}: {row['count']:,} records")
-
-        logger.logger.info("✅ Hoàn thành thống kê toàn diện!")
+        # Lấy số lượng bản ghi cuối cùng
+        final_count = unified_df.count()
 
         # === FINAL SUMMARY ===
-        final_count = unified_df.count()
         logger.logger.info(f"🏁 UNIFY PIPELINE COMPLETED SUCCESSFULLY!")
         logger.logger.info(f"📊 FINAL SUMMARY:")
         logger.logger.info(f"   📥 Raw input records: {pre_dedup_count:,}")
-        logger.logger.info(f"   🔄 After deduplication: {final_count:,}")
+        logger.logger.info(f"   🔄 After deduplication and filtering: {final_count:,}")
         logger.logger.info(
-            f"   📉 Total duplicates removed: {pre_dedup_count - final_count:,}"
+            f"   📉 Total records removed: {pre_dedup_count - final_count:,}"
         )
         logger.logger.info(
             f"   ⚡ Processing efficiency: {final_count/pre_dedup_count*100:.1f}% data retained"
         )
-
-        # Không cần áp dụng lại schema vì đã chuẩn hóa DataFrames trước khi hợp nhất
-        # Các cột đã được chuẩn hóa và sắp xếp theo thứ tự của schema thống nhất
-
-        # Log thông tin sau khi hợp nhất
-        logger.log_dataframe_info(unified_df, "unified_data_final")
 
         # Ghi dữ liệu ra
         output_path = os.path.join(

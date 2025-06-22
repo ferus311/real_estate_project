@@ -10,7 +10,7 @@ import re
 
 
 # Cấu hình chung - có thể thay đổi dễ dàng
-PROCESSING_DATE = "2025-05-24"  # Sử dụng execution date của Airflow
+# PROCESSING_DATE = "2025-06-04"  # Sử dụng execution date của Airflow
 
 default_args = {
     "owner": "airflow",
@@ -44,67 +44,11 @@ dag = DAG(
 )
 
 
-# # Stage 1: Extraction (Raw → Bronze)
-# extraction_stage = DockerOperator(
-#     task_id="stage_1_extraction",
-#     image="spark-processor:latest",
-#     command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} --extract-only",
-#     network_mode="hdfs_network",
-#     api_version="auto",
-#     auto_remove=True,
-#     mount_tmp_dir=False,
-#     environment=COMMON_ENVIRONMENT,
-#     docker_url="unix://var/run/docker.sock",
-#     dag=dag,
-# )
-
-# # Stage 2: Transformation (Bronze → Silver)
-# transformation_stage = DockerOperator(
-#     task_id="stage_2_transformation",
-#     image="spark-processor:latest",
-#     command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} --transform-only",
-#     network_mode="hdfs_network",
-#     api_version="auto",
-#     auto_remove=True,
-#     mount_tmp_dir=False,
-#     environment=COMMON_ENVIRONMENT,
-#     docker_url="unix://var/run/docker.sock",
-#     dag=dag,
-# )
-
-# # Stage 3: Unification (Silver → Gold)
-# unification_stage = DockerOperator(
-#     task_id="stage_3_unification",
-#     image="spark-processor:latest",
-#     command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} --unify-only",
-#     network_mode="hdfs_network",
-#     api_version="auto",
-#     auto_remove=True,
-#     mount_tmp_dir=False,
-#     environment=COMMON_ENVIRONMENT,
-#     docker_url="unix://var/run/docker.sock",
-#     dag=dag,
-# )
-
-# # Stage 4: Load (Gold → PostgreSQL)
-# load_stage = DockerOperator(
-#     task_id="stage_4_load",
-#     image="spark-processor:latest",
-#     command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} --load-only ",
-#     network_mode="hdfs_network",
-#     api_version="auto",
-#     auto_remove=True,
-#     mount_tmp_dir=False,
-#     environment=COMMON_ENVIRONMENT,
-#     docker_url="unix://var/run/docker.sock",
-#     dag=dag,
-# )
-
-# Task chạy full pipeline (để backup)
-full_pipeline = DockerOperator(
-    task_id="run_full_pipeline",
+# Stage 1: Extraction (Raw → Bronze)
+extraction_stage = DockerOperator(
+    task_id="stage_1_extraction",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} ",
+    command=f"python /app/pipelines/daily_processing.py  --extract-only",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,
@@ -114,6 +58,62 @@ full_pipeline = DockerOperator(
     dag=dag,
 )
 
+# Stage 2: Transformation (Bronze → Silver)
+transformation_stage = DockerOperator(
+    task_id="stage_2_transformation",
+    image="spark-processor:latest",
+    command=f"python /app/pipelines/daily_processing.py  --transform-only",
+    network_mode="hdfs_network",
+    api_version="auto",
+    auto_remove=True,
+    mount_tmp_dir=False,
+    environment=COMMON_ENVIRONMENT,
+    docker_url="unix://var/run/docker.sock",
+    dag=dag,
+)
+
+# Stage 3: Unification (Silver → Gold)
+unification_stage = DockerOperator(
+    task_id="stage_3_unification",
+    image="spark-processor:latest",
+    command=f"python /app/pipelines/daily_processing.py  --unify-only",
+    network_mode="hdfs_network",
+    api_version="auto",
+    auto_remove=True,
+    mount_tmp_dir=False,
+    environment=COMMON_ENVIRONMENT,
+    docker_url="unix://var/run/docker.sock",
+    dag=dag,
+)
+
+# Stage 4: Load (Gold → PostgreSQL)
+load_stage = DockerOperator(
+    task_id="stage_4_load",
+    image="spark-processor:latest",
+    command=f"python /app/pipelines/daily_processing.py  --load-only ",
+    network_mode="hdfs_network",
+    api_version="auto",
+    auto_remove=True,
+    mount_tmp_dir=False,
+    environment=COMMON_ENVIRONMENT,
+    docker_url="unix://var/run/docker.sock",
+    dag=dag,
+)
+
+# Task chạy full pipeline (để backup)
+# full_pipeline = DockerOperator(
+#     task_id="run_full_pipeline",
+#     image="spark-processor:latest",
+#     command=f"python /app/pipelines/daily_processing.py --date {PROCESSING_DATE} ",
+#     network_mode="hdfs_network",
+#     api_version="auto",
+#     auto_remove=True,
+#     mount_tmp_dir=False,
+#     environment=COMMON_ENVIRONMENT,
+#     docker_url="unix://var/run/docker.sock",
+#     dag=dag,
+# )
+
 # Thiết lập dependencies cho pipeline tuần tự
-# extraction_stage >> transformation_stage >> unification_stage >> load_stage
-full_pipeline
+extraction_stage >> transformation_stage >> unification_stage >> load_stage
+# full_pipeline

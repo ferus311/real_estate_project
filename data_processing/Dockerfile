@@ -2,8 +2,13 @@ FROM bitnami/spark:latest
 
 USER root
 
-# Cài đặt các thư viện Python cần thiết
-RUN apt-get update && apt-get install -y python3-pip wget
+# Cài đặt các thư viện Python cần thiết và dependencies cho psycopg2
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    wget \
+    libpq-dev \
+    gcc \
+    python3-dev
 
 COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt

@@ -8,7 +8,7 @@ from datetime import datetime
 
 class BaseListCrawler(ABC):
     """
-    Lớp cơ sở cho tất cả các crawler
+    Lớp cơ sở cho tất cả các list crawler
     """
 
     def __init__(self, source: str, max_concurrent: int = 5):

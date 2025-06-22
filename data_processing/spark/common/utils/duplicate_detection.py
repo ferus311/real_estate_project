@@ -659,33 +659,42 @@ def find_fuzzy_duplicates_in_group_udf():
 # ============================================================================
 
 
-def deduplicate_load_stage(new_df: DataFrame, postgres_config: Dict) -> DataFrame:
+def deduplicate_load_stage(
+    new_df: DataFrame, postgres_config: Dict, days: int = 90
+) -> DataFrame:
     """
-    Limited window deduplication cho LOAD TO SERVING stage
+    Advanced deduplication cho LOAD TO SERVING stage với cải tiến window size
+
+    Cải tiến:
+    - Tăng window để kiểm tra từ 30 ngày lên 90 ngày mặc định, giúp phát hiện được nhiều bản ghi trùng lặp hơn
+    - Tham số days có thể tùy chỉnh theo nhu cầu
 
     Args:
         new_df: New data từ UNIFY stage
         postgres_config: PostgreSQL connection config
+        days: Số ngày lùi lại để kiểm tra duplicates (default: 90 days)
 
     Returns:
         DataFrame đã resolved conflicts với existing data
     """
 
-    print("🔄 Starting limited window deduplication in LOAD stage...")
+    print(f"🔄 Starting advanced window deduplication ({days} days) in LOAD stage...")
 
     # Safety check for empty input
     if new_df.count() == 0:
         print("📊 Input DataFrame is empty, returning as-is")
         return new_df
 
-    # Load existing data (30 ngày gần nhất)
-    existing_df = load_existing_data_window(postgres_config, days=30)
+    # Load existing data (với window size và limit được cải tiến)
+    existing_df = load_existing_data_window(postgres_config, days=days, limit=500000)
 
     if existing_df.count() == 0:
         print("📊 No existing data found, loading all new records")
         return new_df
 
-    print(f"📊 Loaded {existing_df.count():,} existing records (30 days)")
+    print(
+        f"📊 Loaded {existing_df.count():,} existing records (window: {days} days, limit: 500,000)"
+    )
 
     # Find potential duplicates
     conflicts = find_conflicts_with_existing(new_df, existing_df)
@@ -698,8 +707,22 @@ def deduplicate_load_stage(new_df: DataFrame, postgres_config: Dict) -> DataFram
     return resolved_df
 
 
-def load_existing_data_window(postgres_config: Dict, days: int = 30) -> DataFrame:
-    """Load existing data từ PostgreSQL với time window - with error handling"""
+def load_existing_data_window(
+    postgres_config: Dict, days: int = 90, limit: int = 500000
+) -> DataFrame:
+    """
+    Load existing data từ PostgreSQL với time window để kiểm tra duplicates
+
+    Args:
+        postgres_config: PostgreSQL connection config
+        days: Number of days to look back (default: 90 days)
+              Lưu ý: Tăng từ 30 ngày lên 90 ngày để cải thiện phát hiện bản ghi trùng lặp
+        limit: Maximum number of records to load (default: 500,000)
+               Lưu ý: Tăng từ 200,000 lên 500,000 để phát hiện nhiều duplicates hơn
+
+    Returns:
+        DataFrame chứa dữ liệu hiện có trong PostgreSQL
+    """
 
     try:
         # Safety check for postgres_config
@@ -714,7 +737,7 @@ def load_existing_data_window(postgres_config: Dict, days: int = 30) -> DataFram
             f"🔍 Testing PostgreSQL connection to {postgres_config.get('url', 'unknown URL')}..."
         )
 
-        # Query để load existing data
+        # Query để load existing data với window và limit cải tiến
         query = f"""
         (SELECT
             id, url, source, title, location,
@@ -725,7 +748,8 @@ def load_existing_data_window(postgres_config: Dict, days: int = 30) -> DataFram
             created_at, updated_at
         FROM properties
         WHERE updated_at >= NOW() - INTERVAL '{days} days'
-        LIMIT 200000) as existing_data
+        ORDER BY updated_at DESC
+        LIMIT {limit}) as existing_data
         """
 
         existing_df = (
@@ -806,7 +830,10 @@ def find_conflicts_with_existing(
             )
             .select(
                 *[col(f"new.{c}").alias(f"new_{c}") for c in new_df.columns],
-                *[col(f"existing.{c}").alias(f"existing_{c}") for c in existing_df.columns],
+                *[
+                    col(f"existing.{c}").alias(f"existing_{c}")
+                    for c in existing_df.columns
+                ],
                 lit("ID_MATCH").alias("conflict_type"),
             )
         )
@@ -858,7 +885,10 @@ def find_conflicts_with_existing(
             )
             .select(
                 *[col(f"new.{c}").alias(f"new_{c}") for c in new_df.columns],
-                *[col(f"existing.{c}").alias(f"existing_{c}") for c in existing_df.columns],
+                *[
+                    col(f"existing.{c}").alias(f"existing_{c}")
+                    for c in existing_df.columns
+                ],
                 lit("LOCATION_MATCH").alias("conflict_type"),
             )
         )
@@ -892,8 +922,7 @@ def resolve_load_conflicts(new_df: DataFrame, conflicts_df: DataFrame) -> DataFr
                     & col("existing_data_quality_score").isNotNull()
                 )
                 & (
-                    col("new_data_quality_score")
-                    - col("existing_data_quality_score")
+                    col("new_data_quality_score") - col("existing_data_quality_score")
                     >= 20
                 ),
                 lit("USE_NEW"),
@@ -905,18 +934,14 @@ def resolve_load_conflicts(new_df: DataFrame, conflicts_df: DataFrame) -> DataFr
                     & col("existing_data_quality_score").isNotNull()
                 )
                 & (
-                    col("existing_data_quality_score")
-                    - col("new_data_quality_score")
+                    col("existing_data_quality_score") - col("new_data_quality_score")
                     >= 20
                 ),
                 lit("SKIP_NEW"),
             )
             .when(
                 # Rule 3: Different sources with similar quality
-                (
-                    col("new_source").isNotNull()
-                    & col("existing_source").isNotNull()
-                )
+                (col("new_source").isNotNull() & col("existing_source").isNotNull())
                 & (col("new_source") != col("existing_source"))
                 & (
                     spark_abs(
@@ -929,10 +954,7 @@ def resolve_load_conflicts(new_df: DataFrame, conflicts_df: DataFrame) -> DataFr
             )
             .when(
                 # Rule 4: Same source, newer timestamp wins
-                (
-                    col("new_source").isNotNull()
-                    & col("existing_source").isNotNull()
-                )
+                (col("new_source").isNotNull() & col("existing_source").isNotNull())
                 & (col("new_source") == col("existing_source"))
                 & (
                     col("new_processing_timestamp").isNotNull()
@@ -952,9 +974,7 @@ def resolve_load_conflicts(new_df: DataFrame, conflicts_df: DataFrame) -> DataFr
         skip_records = resolved_conflicts.filter(col("resolution") == "SKIP_NEW")
 
         if skip_records.count() > 0:
-            skip_ids = skip_records.select(
-                col("new_id").alias("skip_id")
-            ).distinct()
+            skip_ids = skip_records.select(col("new_id").alias("skip_id")).distinct()
             result_df = new_df.join(
                 skip_ids, new_df.id == skip_ids.skip_id, "left_anti"
             )
@@ -980,12 +1000,23 @@ def apply_unify_deduplication(df: DataFrame) -> DataFrame:
     return deduplicate_unify_stage(df)
 
 
-def apply_load_deduplication(df: DataFrame, postgres_config: Dict) -> DataFrame:
+def apply_load_deduplication(
+    df: DataFrame, postgres_config: Dict, days_window: int = 90
+) -> DataFrame:
     """
     Main interface cho LOAD stage deduplication with error handling
+
+    Args:
+        df: DataFrame to deduplicate
+        postgres_config: PostgreSQL connection config
+        days_window: Number of days to look back for duplicates (default: 90 days)
+                     Lưu ý: Tăng từ 30 ngày lên 90 ngày để giảm khả năng bỏ sót bản ghi trùng lặp cũ
+
+    Returns:
+        DataFrame đã loại bỏ duplicates
     """
     try:
-        return deduplicate_load_stage(df, postgres_config)
+        return deduplicate_load_stage(df, postgres_config, days=days_window)
     except Exception as e:
         print(f"⚠️ Load deduplication failed: {e}")
         print("🔄 Returning original data without load-stage deduplication")
