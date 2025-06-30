@@ -565,7 +565,7 @@ class MLTrainer:
         # No StandardScaler - use raw features directly for better interpretability
         self.logger.logger.info("💡 Using raw features without standardization")
         self.logger.logger.info(
-            "   - This ensures consistency between training and prediction"
+            "   - This ensures consistency between training and prediction service"
         )
         self.logger.logger.info(
             "   - XGBoost and LightGBM handle feature scaling internally"
@@ -645,38 +645,14 @@ class MLTrainer:
         return final_df, pipeline_model
 
     def train_spark_models(self, df: Any) -> Dict[str, Dict]:
-        """🤖 Train Spark ML models with optimized memory usage"""
-        self.logger.logger.info("🤖 Training Spark ML models...")
-
-        # Filter out records with null features or labels to prevent "Nothing has been added to summarizer" error
-        clean_df = df.filter(col("features").isNotNull() & col("price").isNotNull())
-        clean_count = clean_df.count()
-
-        if clean_count == 0:
-            raise ValueError(
-                "❌ No valid records found for ML training after cleaning!"
-            )
-
-        self.logger.logger.info(f"🧹 Cleaned dataset: {clean_count:,} valid records")
-
-        # Time-aware data splitting for better real estate model validation
-        train_df, test_df = self._create_temporal_split(clean_df)
-
-        # Cache split datasets
-        train_df.cache()
-        test_df.cache()
-
-        # Force materialization
-        train_count = train_df.count()
-        test_count = test_df.count()
-
+        """🤖 Train Spark ML models (Random Forest & Linear Regression) following Kaggle approach"""
         self.logger.logger.info(
-            f"📅 Time-aware split - Train set: {train_count:,}, Test set: {test_count:,}"
+            "🤖 Training Spark ML models with model-specific data preparation..."
         )
 
         models = {}
 
-        # Create evaluators outside loop to avoid re-serialization
+        # Create evaluators once to avoid re-serialization
         rmse_evaluator = RegressionEvaluator(
             labelCol="price", predictionCol="prediction", metricName="rmse"
         )
@@ -687,159 +663,511 @@ class MLTrainer:
             labelCol="price", predictionCol="prediction", metricName="r2"
         )
 
-        # Get model configs using static method
-        model_configs = ModelConfig.get_spark_model_configs()
+        # ==================== RANDOM FOREST ====================
+        self.logger.logger.info("🌲 Training Random Forest...")
+        try:
+            # Prepare data specifically for Random Forest
+            df_rf = self.prepare_rf_model_data(df)
 
-        for model_name, config in model_configs.items():
-            self.logger.logger.info(f"🏋️ Training {model_name}...")
+            # Define features for RF (including high cardinality categorical)
+            numerical_features = [
+                "area",
+                "latitude",
+                "longitude",
+                "bedroom",
+                "bathroom",
+                "floor_count",
+                "population_density",
+                "total_rooms",
+                "area_per_room",
+                "bedroom_bathroom_ratio",
+            ]
+            low_card_cat = [
+                "province_id",
+                "interior_code",
+                "legal_status_code",
+                "house_direction_code",
+            ]
+            high_card_cat = ["district_id", "ward_id"]
+            all_rf_features = numerical_features + low_card_cat + high_card_cat
 
-            try:
-                # Create model with fresh config to avoid serialization issues
-                model_class = config["class"]
-                model_params = config["params"].copy()  # Copy to avoid mutation
-                model = model_class(**model_params)
+            # Validate features exist in prepared data
+            available_rf_features = [f for f in all_rf_features if f in df_rf.columns]
+            missing_features = [f for f in all_rf_features if f not in df_rf.columns]
 
-                # Train model
-                trained_model = model.fit(train_df)
-                predictions = trained_model.transform(test_df)
-
-                # Cache predictions for multiple evaluations
-                predictions.cache()
-
-                # Evaluate with pre-created evaluators
-                rmse = rmse_evaluator.evaluate(predictions)
-                mae = mae_evaluator.evaluate(predictions)
-                r2 = r2_evaluator.evaluate(predictions)
-
-                # Calculate business-specific metrics
-                business_metrics = self._calculate_business_metrics(predictions)
-
-                models[model_name] = {
-                    "model": trained_model,
-                    "rmse": rmse,
-                    "mae": mae,
-                    "r2": r2,
-                    "model_type": "spark",
-                    "business_metrics": business_metrics,
-                }
-
-                # Enhanced logging with business metrics
-                within_20_pct = business_metrics.get("within_20_percent", "N/A")
-                self.logger.logger.info(
-                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}, Within 20%: {within_20_pct}%"
+            if missing_features:
+                self.logger.logger.error(f"❌ RF missing features: {missing_features}")
+                self.logger.logger.error(
+                    f"Available columns in df_rf: {sorted(df_rf.columns)}"
+                )
+                # Log a sample of the dataframe to debug
+                sample_count = min(5, df_rf.count())
+                if sample_count > 0:
+                    self.logger.logger.error("Sample data:")
+                    df_rf.select(*df_rf.columns[:10]).show(sample_count, truncate=False)
+                raise ValueError(
+                    f"Missing features for Random Forest: {missing_features}"
                 )
 
-                # Clean up predictions cache
-                predictions.unpersist()
+            self.logger.logger.info(
+                f"✅ RF using {len(available_rf_features)} features: {available_rf_features}"
+            )
 
-            except Exception as e:
-                self.logger.logger.error(f"❌ Failed to train {model_name}: {e}")
+            # Create VectorAssembler for RF
+            from pyspark.ml.feature import VectorAssembler
 
-        # Clean up cached DataFrames
-        train_df.unpersist()
-        test_df.unpersist()
+            rf_assembler = VectorAssembler(
+                inputCols=available_rf_features,
+                outputCol="features",
+                handleInvalid="skip",
+            )
 
+            # Transform and prepare RF data
+            df_rf_vectorized = rf_assembler.transform(df_rf)
+            df_rf_clean = df_rf_vectorized.filter(
+                col("features").isNotNull() & col("price").isNotNull()
+            )
+
+            # Train/test split for RF
+            rf_train, rf_test = self._create_temporal_split(df_rf_clean)
+            rf_train.cache()
+            rf_test.cache()
+
+            train_count = rf_train.count()
+            test_count = rf_test.count()
+            self.logger.logger.info(
+                f"🌲 RF Train/Test: {train_count:,} / {test_count:,}"
+            )
+
+            # Train Random Forest model (like Kaggle: n_estimators=200, max_depth=15)
+            from pyspark.ml.regression import RandomForestRegressor
+
+            rf_model = RandomForestRegressor(
+                featuresCol="features",
+                labelCol="price",
+                numTrees=200,
+                maxDepth=15,
+                seed=42,
+            )
+
+            rf_fitted = rf_model.fit(rf_train)
+            rf_predictions = rf_fitted.transform(rf_test)
+
+            # Calculate metrics
+            rf_rmse = rmse_evaluator.evaluate(rf_predictions)
+            rf_mae = mae_evaluator.evaluate(rf_predictions)
+            rf_r2 = r2_evaluator.evaluate(rf_predictions)
+
+            # Business metrics
+            rf_business_metrics = self._calculate_business_metrics(rf_predictions)
+
+            models["random_forest"] = {
+                "model": rf_fitted,
+                "model_type": "spark",
+                "rmse": float(rf_rmse),
+                "mae": float(rf_mae),
+                "r2": float(rf_r2),
+                "business_metrics": rf_business_metrics,
+                "feature_count": len(available_rf_features),
+            }
+
+            self.logger.logger.info(
+                f"✅ Random Forest: RMSE={rf_rmse:,.0f}, R²={rf_r2:.3f}"
+            )
+
+            # Clean up
+            rf_train.unpersist()
+            rf_test.unpersist()
+
+        except Exception as e:
+            self.logger.logger.error(f"❌ Random Forest training failed: {e}")
+
+        # ==================== LINEAR REGRESSION ====================
+        self.logger.logger.info("📈 Training Linear Regression...")
+        try:
+            # Prepare data specifically for Linear Regression
+            df_lr = self.prepare_lr_model_data(df)
+
+            # Define features for LR (exclude high cardinality categorical)
+            numerical_features = [
+                "area",
+                "latitude",
+                "longitude",
+                "bedroom",
+                "bathroom",
+                "floor_count",
+                "population_density",
+                "total_rooms",
+                "area_per_room",
+                "bedroom_bathroom_ratio",
+            ]
+            low_card_cat = [
+                "province_id",
+                "interior_code",
+                "legal_status_code",
+                "house_direction_code",
+            ]
+
+            # Validate features exist in prepared data
+            available_numeric = [f for f in numerical_features if f in df_lr.columns]
+            available_categorical = [f for f in low_card_cat if f in df_lr.columns]
+
+            missing_numeric = [f for f in numerical_features if f not in df_lr.columns]
+            missing_categorical = [f for f in low_card_cat if f not in df_lr.columns]
+
+            if missing_numeric or missing_categorical:
+                self.logger.logger.error(f"❌ LR missing numeric: {missing_numeric}")
+                self.logger.logger.error(
+                    f"❌ LR missing categorical: {missing_categorical}"
+                )
+                self.logger.logger.error(
+                    f"Available columns in df_lr: {sorted(df_lr.columns)}"
+                )
+                raise ValueError(
+                    f"Missing features for Linear Regression: {missing_numeric + missing_categorical}"
+                )
+
+            self.logger.logger.info(
+                f"✅ LR using {len(available_numeric)} numeric + {len(available_categorical)} categorical features"
+            )
+            from pyspark.ml.feature import (
+                StringIndexer,
+                OneHotEncoder,
+                VectorAssembler,
+                StandardScaler,
+            )
+            from pyspark.ml import Pipeline
+
+            # Create preprocessing stages
+            stages = []
+            feature_cols = numerical_features.copy()
+
+            # Process categorical features
+            for cat_col in low_card_cat:
+                if cat_col in df_lr.columns:
+                    # StringIndexer
+                    indexer = StringIndexer(
+                        inputCol=cat_col,
+                        outputCol=f"{cat_col}_indexed",
+                        handleInvalid="keep",
+                    )
+                    stages.append(indexer)
+
+                    # OneHotEncoder
+                    encoder = OneHotEncoder(
+                        inputCol=f"{cat_col}_indexed", outputCol=f"{cat_col}_encoded"
+                    )
+                    stages.append(encoder)
+
+                    feature_cols.append(f"{cat_col}_encoded")
+
+            # VectorAssembler for all features
+            assembler = VectorAssembler(
+                inputCols=feature_cols, outputCol="features_raw", handleInvalid="skip"
+            )
+            stages.append(assembler)
+
+            # StandardScaler (critical for Linear Regression)
+            scaler = StandardScaler(
+                inputCol="features_raw",
+                outputCol="features",
+                withStd=True,
+                withMean=True,
+            )
+            stages.append(scaler)
+
+            # Create preprocessing pipeline
+            preprocessing_pipeline = Pipeline(stages=stages)
+
+            # Fit preprocessing
+            preprocessing_model = preprocessing_pipeline.fit(df_lr)
+            df_lr_processed = preprocessing_model.transform(df_lr)
+
+            # Clean data
+            df_lr_clean = df_lr_processed.filter(
+                col("features").isNotNull()
+                & col("price").isNotNull()
+                & col("log_price").isNotNull()
+            )
+
+            # Train/test split for LR
+            lr_train, lr_test = self._create_temporal_split(df_lr_clean)
+            lr_train.cache()
+            lr_test.cache()
+
+            train_count = lr_train.count()
+            test_count = lr_test.count()
+            self.logger.logger.info(
+                f"📈 LR Train/Test: {train_count:,} / {test_count:,}"
+            )
+
+            # Train Linear Regression on log-price (like Kaggle)
+            from pyspark.ml.regression import LinearRegression
+
+            lr_model = LinearRegression(
+                featuresCol="features",
+                labelCol="log_price",  # Use log-transformed target
+                regParam=0.01,
+                elasticNetParam=0.1,
+            )
+
+            lr_fitted = lr_model.fit(lr_train)
+            lr_predictions = lr_test.select("features", "price", "log_price")
+            lr_predictions = lr_fitted.transform(lr_predictions)
+
+            # Convert log predictions back to original scale (like Kaggle)
+            from pyspark.sql.functions import exp
+
+            lr_predictions = lr_predictions.withColumn(
+                "prediction", exp(col("prediction"))
+            )
+
+            # Calculate metrics on original price scale
+            lr_rmse = rmse_evaluator.evaluate(lr_predictions)
+            lr_mae = mae_evaluator.evaluate(lr_predictions)
+            lr_r2 = r2_evaluator.evaluate(lr_predictions)
+
+            # Business metrics
+            lr_business_metrics = self._calculate_business_metrics(lr_predictions)
+
+            models["linear_regression"] = {
+                "model": lr_fitted,
+                "preprocessing_model": preprocessing_model,
+                "model_type": "spark",
+                "rmse": float(lr_rmse),
+                "mae": float(lr_mae),
+                "r2": float(lr_r2),
+                "business_metrics": lr_business_metrics,
+                "feature_count": len(feature_cols),
+                "uses_log_target": True,
+            }
+
+            self.logger.logger.info(
+                f"✅ Linear Regression: RMSE={lr_rmse:,.0f}, R²={lr_r2:.3f}"
+            )
+
+            # Clean up
+            lr_train.unpersist()
+            lr_test.unpersist()
+
+        except Exception as e:
+            self.logger.logger.error(f"❌ Linear Regression training failed: {e}")
+
+        self.logger.logger.info(
+            f"🎯 Spark models training completed: {len(models)} models trained"
+        )
         return models
 
     def train_sklearn_models(self, df: Any) -> Dict[str, Dict]:
-        """🚀 Train sklearn models with optimized data conversion"""
+        """🚀 Train XGBoost/LightGBM models following Kaggle approach with NULL handling"""
         if not SKLEARN_MODELS_AVAILABLE:
             self.logger.logger.warning("⚠️ Sklearn models not available")
             return {}
 
-        self.logger.logger.info("🚀 Training sklearn models...")
-
-        # Efficient Spark to Pandas conversion with sampling for large datasets
-        total_records = df.count()
-
-        # Sample if dataset is too large to prevent memory issues
-        if total_records > 30000:  # 500K records
-            # sample_ratio = 500000 / total_records
-            # df_sampled = df.sample(
-            #     withReplacement=False, fraction=0.5, seed=42
-            # )
-            # self.logger.logger.info(
-            #     f"Sampling {sample_ratio:.3f} of data for sklearn models"
-            # )
-            df_sampled = df.limit(30000)
-        else:
-            df_sampled = df
-            # df_sampled = df
-
-        # log ra xem data the nao di
         self.logger.logger.info(
-            f"📊 Sampled dataset: {df_sampled.count():,} records for sklearn models"
+            "🚀 Training XGBoost/LightGBM models with tree-optimized data..."
         )
 
-        # Convert to Pandas efficiently
-        pandas_df = df_sampled.select("features", "price", "log_price").toPandas()
+        # Step 1: Prepare data specifically for tree models (preserve NULLs)
+        df_tree = self.prepare_tree_model_data(df)
 
-        # Extract features efficiently using vectorized operations
-        features_list = pandas_df["features"].apply(lambda x: x.toArray()).tolist()
-        features_array = np.vstack(features_list)
-        y = pandas_df["price"].values
+        # Step 2: Select exact 16 features (same as Kaggle code)
+        important_features = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+            "population_density",
+        ]
 
-        # Split data
+        # Validate features exist
+        available_features = [f for f in important_features if f in df_tree.columns]
+        if len(available_features) != 16:
+            self.logger.logger.error(
+                f"❌ Expected 16 features, got {len(available_features)}"
+            )
+            return {}
+
+        # Step 3: Convert to Pandas (tree models work better with Pandas)
+        total_records = df_tree.count()
+
+        # Sample if too large (but keep more data for tree models)
+        if total_records > 50000:
+            df_sampled = df_tree.limit(50000)
+            self.logger.logger.info(
+                f"📊 Sampling 50K records from {total_records:,} for sklearn models"
+            )
+        else:
+            df_sampled = df_tree
+
+        # Select features + target for conversion
+        feature_cols = available_features + ["price"]
+        pandas_df = df_sampled.select(feature_cols).toPandas()
+
+        self.logger.logger.info(
+            f"🐼 Converted to Pandas: {len(pandas_df):,} records, {len(available_features)} features"
+        )
+
+        # Step 4: Prepare features and target (like Kaggle)
+        X = pandas_df[available_features]
+        y = pandas_df["price"]
+
+        # Log missing value statistics
+        self.logger.logger.info("🔍 Missing value statistics for tree models:")
+        for col in available_features:
+            null_count = X[col].isnull().sum()
+            if null_count > 0:
+                self.logger.logger.info(
+                    f"   - {col}: {null_count:,} nulls ({null_count/len(X)*100:.1f}%)"
+                )
+
+        # Step 5: Train/test split (like Kaggle)
         from sklearn.model_selection import train_test_split
 
         X_train, X_test, y_train, y_test = train_test_split(
-            features_array, y, test_size=0.2, random_state=42
+            X, y, test_size=0.2, random_state=42
+        )
+
+        self.logger.logger.info(
+            f"📊 Train/test split: {len(X_train):,} / {len(X_test):,}"
         )
 
         models = {}
 
-        # Get model configs using static method
-        model_configs = ModelConfig.get_sklearn_model_configs()
+        # Step 6: Train XGBoost (handles NULLs natively)
+        self.logger.logger.info("🏋️ Training XGBoost...")
+        try:
+            from xgboost import XGBRegressor
 
-        for model_name, config in model_configs.items():
-            self.logger.logger.info(f"🏋️ Training {model_name}...")
+            xgb_model = XGBRegressor(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.05,
+                random_state=42,
+                n_jobs=4,
+            )
 
-            try:
-                # Create model with fresh config
-                model_class = config["class"]
-                model_params = config["params"].copy()
-                model = model_class(**model_params)
+            # XGBoost can handle NaN values natively
+            xgb_model.fit(X_train, y_train)
 
-                # Fit model
-                model.fit(X_train, y_train)
+            # Predictions
+            train_preds = xgb_model.predict(X_train)
+            test_preds = xgb_model.predict(X_test)
 
-                # Predict
-                y_pred = model.predict(X_test)
+            # Metrics
+            from sklearn.metrics import (
+                mean_squared_error,
+                mean_absolute_error,
+                r2_score,
+            )
+            import numpy as np
 
-                # Calculate metrics
-                from sklearn.metrics import (
-                    mean_squared_error,
-                    mean_absolute_error,
-                    r2_score,
-                )
+            train_rmse = np.sqrt(mean_squared_error(y_train, train_preds))
+            train_mae = mean_absolute_error(y_train, train_preds)
+            train_r2 = r2_score(y_train, train_preds)
 
-                rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-                mae = mean_absolute_error(y_test, y_pred)
-                r2 = r2_score(y_test, y_pred)
+            test_rmse = np.sqrt(mean_squared_error(y_test, test_preds))
+            test_mae = mean_absolute_error(y_test, test_preds)
+            test_r2 = r2_score(y_test, test_preds)
 
-                # Calculate business-specific metrics for sklearn models
-                business_metrics = self._calculate_sklearn_business_metrics(
-                    y_test, y_pred
-                )
+            # Business metrics
+            business_metrics = self._calculate_sklearn_business_metrics(
+                y_test, test_preds
+            )
 
-                models[model_name] = {
-                    "model": model,
-                    "rmse": rmse,
-                    "mae": mae,
-                    "r2": r2,
-                    "model_type": "sklearn",
-                    "business_metrics": business_metrics,
-                }
+            models["xgboost"] = {
+                "model": xgb_model,
+                "model_type": "sklearn",
+                "rmse": float(test_rmse),
+                "mae": float(test_mae),
+                "r2": float(test_r2),
+                "train_rmse": float(train_rmse),
+                "train_r2": float(train_r2),
+                "business_metrics": business_metrics,
+            }
 
-                # Enhanced logging with business metrics
-                within_20_pct = business_metrics.get("within_20_percent", "N/A")
-                self.logger.logger.info(
-                    f"✅ {model_name}: RMSE={rmse:,.0f}, MAE={mae:,.0f}, R²={r2:.3f}, Within 20%: {within_20_pct}%"
-                )
+            self.logger.logger.info(f"✅ XGBoost completed:")
+            self.logger.logger.info(
+                f"   Train RMSE: {train_rmse:,.2f}, R²: {train_r2:.4f}"
+            )
+            self.logger.logger.info(
+                f"   Test RMSE: {test_rmse:,.2f}, R²: {test_r2:.4f}"
+            )
 
-            except Exception as e:
-                self.logger.logger.error(f"❌ Failed to train {model_name}: {e}")
+        except Exception as e:
+            self.logger.logger.error(f"❌ XGBoost training failed: {e}")
 
+        # Step 7: Train LightGBM (also handles NULLs natively)
+        self.logger.logger.info("🏋️ Training LightGBM...")
+        try:
+            from lightgbm import LGBMRegressor
+
+            lgb_model = LGBMRegressor(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.05,
+                random_state=42,
+                n_jobs=4,
+                verbose=-1,
+            )
+
+            # LightGBM can handle NaN values natively
+            lgb_model.fit(X_train, y_train)
+
+            # Predictions
+            train_preds = lgb_model.predict(X_train)
+            test_preds = lgb_model.predict(X_test)
+
+            # Metrics
+            train_rmse = np.sqrt(mean_squared_error(y_train, train_preds))
+            train_mae = mean_absolute_error(y_train, train_preds)
+            train_r2 = r2_score(y_train, train_preds)
+
+            test_rmse = np.sqrt(mean_squared_error(y_test, test_preds))
+            test_mae = mean_absolute_error(y_test, test_preds)
+            test_r2 = r2_score(y_test, test_preds)
+
+            # Business metrics
+            business_metrics = self._calculate_sklearn_business_metrics(
+                y_test, test_preds
+            )
+
+            models["lightgbm"] = {
+                "model": lgb_model,
+                "model_type": "sklearn",
+                "rmse": float(test_rmse),
+                "mae": float(test_mae),
+                "r2": float(test_r2),
+                "train_rmse": float(train_rmse),
+                "train_r2": float(train_r2),
+                "business_metrics": business_metrics,
+            }
+
+            self.logger.logger.info(f"✅ LightGBM completed:")
+            self.logger.logger.info(
+                f"   Train RMSE: {train_rmse:,.2f}, R²: {train_r2:.4f}"
+            )
+            self.logger.logger.info(
+                f"   Test RMSE: {test_rmse:,.2f}, R²: {test_r2:.4f}"
+            )
+
+        except Exception as e:
+            self.logger.logger.error(f"❌ LightGBM training failed: {e}")
+
+        self.logger.logger.info(
+            f"🎯 Tree models training completed: {len(models)} models trained"
+        )
         return models
 
     def create_ensemble_model(self, models: Dict[str, Dict]) -> Dict[str, Any]:
@@ -1342,16 +1670,17 @@ class MLTrainer:
             # Step 1: Read ML features with optimized data handling
             df, metadata = self.read_ml_features(date, property_type)
 
-            # Step 2: Prepare data for Spark ML with memory optimization
-            df_ml, preprocessing_model = self.prepare_spark_ml_data(df, metadata)
+            # Step 2: Prepare preprocessing model for deployment
+            # Note: This is only used for creating the preprocessing model, not for training
+            _, preprocessing_model = self.prepare_spark_ml_data(df, metadata)
 
-            # Step 3: Train Spark models with reduced serialization overhead
-            spark_models = self.train_spark_models(df_ml)
+            # Step 3: Train Spark models with raw feature data
+            spark_models = self.train_spark_models(df)
 
-            # Step 4: Train sklearn models if available and enabled
+            # Step 4: Train sklearn models with raw feature data
             sklearn_models = {}
             if enable_sklearn_models and SKLEARN_MODELS_AVAILABLE:
-                sklearn_models = self.train_sklearn_models(df_ml)
+                sklearn_models = self.train_sklearn_models(df)
 
             # Step 5: Combine all models efficiently
             all_models = {**spark_models, **sklearn_models}
@@ -1422,8 +1751,6 @@ class MLTrainer:
             # Clean up cached DataFrames
             if hasattr(df, "unpersist"):
                 df.unpersist()
-            if hasattr(df_ml, "unpersist"):
-                df_ml.unpersist()
 
             self.logger.logger.info("=" * 80)
             self.logger.logger.info("🎉 ML Training Pipeline Completed!")
@@ -1662,220 +1989,220 @@ class MLTrainer:
 
         return validation_results
 
-    # ...existing code...
+    def prepare_tree_model_data(self, df: Any) -> Any:
+        """🌳 Prepare data specifically for XGBoost/LightGBM following Kaggle approach"""
+        from pyspark.sql.functions import col, when, lit
 
+        self.logger.logger.info(
+            "🌳 Preparing data for tree-based models (XGBoost/LightGBM)"
+        )
 
-class MLModelTrainer:
-    """
-    🎯 ML Model Trainer Interface for Airflow DAG Integration
+        # Apply downsampling first (like Kaggle code)
+        from ml.utils.data_cleaner import DataCleaner
 
-    This class provides the interface that the Airflow DAG expects and integrates
-    the advanced ML training pipeline with the unified data preparation pipeline.
+        cleaner = DataCleaner(self.spark)
+        df = cleaner.apply_province_downsampling(df)
 
-    Training Strategy:
-    - Data Preparation: Uses sliding window approach to ensure sufficient feature data
-    - Model Training: Uses latest available single feature file (no union across days)
-    """
+        # Define categorical features (same as Kaggle)
+        categorical_features = [
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+        ]
 
-    def __init__(self, spark_session: Optional[SparkSession] = None):
-        self.spark = spark_session if spark_session else self._create_spark_session()
-        self.logger = SparkJobLogger("ml_model_trainer_interface")
+        # Convert -1 to NULL for categorical features (tree models handle nulls natively)
+        for col_name in categorical_features:
+            if (
+                col_name in df.columns and col_name != "province_id"
+            ):  # Keep province_id validation
+                before_count = df.filter(col(col_name) == -1).count()
+                df = df.withColumn(
+                    col_name,
+                    when(col(col_name) == -1, lit(None)).otherwise(col(col_name)),
+                )
+                if before_count > 0:
+                    self.logger.logger.info(
+                        f"🌳 Converted {before_count:,} values of -1 to NULL in {col_name}"
+                    )
 
-    def _create_spark_session(self) -> SparkSession:
-        """Create optimized Spark session for ML workloads"""
-        return create_optimized_ml_spark_session("ML_Model_Trainer")
+        # For tree models: KEEP nulls in numeric features where appropriate
+        # Only impute absolutely critical features
+        critical_features = ["price", "area", "latitude", "longitude", "province_id"]
 
-    def train_all_models(
-        self, date: str, property_type: str = "house"
-    ) -> Dict[str, Any]:
-        """
-        🚀 Train all models using unified data preparation + advanced ML training
+        for col_name in critical_features:
+            if col_name in df.columns:
+                null_count = df.filter(col(col_name).isNull()).count()
+                if null_count > 0:
+                    if col_name == "province_id":
+                        # Remove records with null province_id (critical)
+                        df = df.filter(col(col_name).isNotNull())
+                        self.logger.logger.info(
+                            f"🌳 Removed {null_count:,} records with NULL {col_name}"
+                        )
+                    else:
+                        # Impute numeric critical features
+                        median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                        if median_val is not None:
+                            df = df.fillna({col_name: median_val})
+                            self.logger.logger.info(
+                                f"🌳 Imputed {null_count:,} NULL values in {col_name} with median: {median_val}"
+                            )
 
-        This method integrates:
-        1. Unified data preparation pipeline (uses sliding window for feature availability)
-        2. Advanced ML training pipeline (uses latest single feature file for training)
-        3. Proper error handling and logging
+        self.logger.logger.info(
+            "🌳 Tree model data preparation completed - NULLs preserved for tree algorithms"
+        )
+        return df
 
-        Args:
-            date: Training date (YYYY-MM-DD)
-            property_type: Property type to train for
+    def prepare_common_features(self, df: Any) -> Any:
+        """🔧 Common feature preparation for all models - avoid code duplication"""
+        from pyspark.sql.functions import col, when, lit
 
-        Returns:
-            Dict with training results including best model and metrics
-        """
-        self.logger.logger.info("🎯 Starting MLModelTrainer.train_all_models()")
-        self.logger.logger.info(f"📅 Date: {date}, 🏠 Property Type: {property_type}")
+        self.logger.logger.info("🔧 Preparing common features...")
 
-        try:
-            # Step 1: Run unified data preparation
-            self.logger.logger.info("📊 Step 1: Running unified data preparation...")
+        # Apply downsampling first (common for all models)
+        from ml.utils.data_cleaner import DataCleaner
 
-            # Import data preparation pipeline
-            from ml.pipelines.data_preparation import UnifiedDataPreparator
+        cleaner = DataCleaner(self.spark)
+        df = cleaner.apply_province_downsampling(df)
 
-            # Initialize data preparator
-            preparator = UnifiedDataPreparator(spark_session=self.spark)
+        # Define essential numeric columns that need imputation for feature engineering
+        essential_numeric = ["bedroom", "bathroom", "floor_count", "area"]
 
-            # Run data preparation with sliding window to ensure sufficient feature data is available
-            # Note: Data preparation uses sliding window, but training uses latest single feature file
-            prep_result = preparator.prepare_training_data(
-                date=date,
-                property_type=property_type,
-                lookback_days=30,  # Data prep sliding window to ensure feature availability
-                target_column="price",
-            )
+        # Fill essential numeric columns with median (needed for derived features)
+        for col_name in essential_numeric:
+            if col_name in df.columns:
+                null_count = df.filter(col(col_name).isNull()).count()
+                if null_count > 0:
+                    median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                    if median_val is not None:
+                        df = df.fillna({col_name: median_val})
+                        self.logger.logger.info(
+                            f"🔧 Filled {null_count:,} nulls in {col_name} with median: {median_val}"
+                        )
 
-            if not prep_result["success"]:
-                raise Exception(
-                    f"Data preparation failed: {prep_result.get('error', 'Unknown error')}"
+        # Create derived features (like Kaggle)
+        df = df.withColumn("total_rooms", col("bedroom") + col("bathroom"))
+        df = df.withColumn(
+            "area_per_room", col("area") / (col("total_rooms") + lit(1e-5))
+        )
+        df = df.withColumn(
+            "bedroom_bathroom_ratio", col("bedroom") / (col("bathroom") + lit(1e-5))
+        )
+
+        self.logger.logger.info(
+            "✅ Created derived features: total_rooms, area_per_room, bedroom_bathroom_ratio"
+        )
+
+        return df
+
+    def prepare_rf_model_data(self, df: Any) -> Any:
+        """🌲 Prepare data specifically for Random Forest following Kaggle approach"""
+        from pyspark.sql.functions import col, when, lit
+
+        self.logger.logger.info("🌲 Preparing data for Random Forest...")
+
+        # Common feature preparation
+        df = self.prepare_common_features(df)
+
+        # Define feature categories (like Kaggle)
+        numerical_features = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "population_density",
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+        ]
+        low_card_cat = [
+            "province_id",
+            "interior_code",
+            "legal_status_code",
+            "house_direction_code",
+        ]
+        high_card_cat = ["district_id", "ward_id"]
+        all_features = numerical_features + low_card_cat + high_card_cat
+
+        # For Random Forest: Fill NaN with -1 for categorical (like Kaggle)
+        for col_name in low_card_cat + high_card_cat:
+            if col_name in df.columns:
+                df = df.fillna({col_name: -1})
+                # Convert to int type
+                df = df.withColumn(col_name, col(col_name).cast("integer"))
+
+        # Fill remaining numeric nulls with median
+        for col_name in numerical_features:
+            if col_name in df.columns:
+                null_count = df.filter(col(col_name).isNull()).count()
+                if null_count > 0:
+                    median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                    if median_val is not None:
+                        df = df.fillna({col_name: median_val})
+
+        self.logger.logger.info(
+            f"🌲 Random Forest data ready with {len(all_features)} features"
+        )
+        return df
+
+    def prepare_lr_model_data(self, df: Any) -> Any:
+        """📈 Prepare data specifically for Linear Regression following Kaggle approach"""
+        from pyspark.sql.functions import col, when, lit, log as spark_log
+
+        self.logger.logger.info("📈 Preparing data for Linear Regression...")
+
+        # Common feature preparation
+        df = self.prepare_common_features(df)
+
+        # For Linear Regression: Use log-transformed target (like Kaggle)
+        df = df.withColumn("log_price", spark_log(col("price")))
+
+        # Define features (exclude high cardinality categorical for linear model)
+        numerical_features = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "population_density",
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+        ]
+        low_card_cat = [
+            "province_id",
+            "interior_code",
+            "legal_status_code",
+            "house_direction_code",
+        ]
+
+        # For Linear Regression: Convert categorical to string and fill missing with "missing"
+        for col_name in low_card_cat:
+            if col_name in df.columns:
+                df = df.withColumn(
+                    col_name,
+                    when(
+                        col(col_name).isNull() | (col(col_name) == -1), "missing"
+                    ).otherwise(col(col_name).cast("string")),
                 )
 
-            self.logger.logger.info(
-                f"✅ Data preparation completed: {prep_result['total_records']:,} records"
-            )
+        # Fill numeric nulls with median (critical for linear models)
+        for col_name in numerical_features:
+            if col_name in df.columns:
+                null_count = df.filter(col(col_name).isNull()).count()
+                if null_count > 0:
+                    median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                    if median_val is not None:
+                        df = df.fillna({col_name: median_val})
 
-            # Step 2: Run advanced ML training pipeline
-            self.logger.logger.info("🤖 Step 2: Running advanced ML training...")
-
-            # Initialize advanced trainer
-            trainer = MLTrainer(spark_session=self.spark)
-
-            # Run training pipeline
-            training_result = trainer.run_training_pipeline(
-                date=date, property_type=property_type, enable_sklearn_models=True
-            )
-
-            if not training_result["success"]:
-                raise Exception("Advanced ML training failed")
-
-            # Step 3: Combine results
-            combined_result = {
-                "success": True,
-                "best_model": training_result["best_model"],
-                "models_trained": [
-                    training_result["best_model"]
-                ],  # Airflow DAG expects this format
-                "best_model_metrics": training_result["metrics"],
-                "data_stats": {
-                    "total_records": prep_result["total_records"],
-                    "features_count": prep_result.get("features_count", "Unknown"),
-                    "data_quality_score": prep_result.get("data_quality_score", 0.95),
-                    "sliding_window_days": 30,
-                    "date_range": prep_result.get(
-                        "date_range", f"{date} (30-day window)"
-                    ),
-                },
-                "model_path": training_result["model_path"],
-                "production_ready": training_result["production_ready"],
-                "training_approach": "sliding_window_30_days",
-                "pipeline_integration": "unified_data_prep + advanced_ml_training",
-            }
-
-            self.logger.logger.info("🎉 MLModelTrainer completed successfully!")
-            self.logger.logger.info(f"🏆 Best Model: {combined_result['best_model']}")
-            self.logger.logger.info(
-                f"📊 Records Used: {combined_result['data_stats']['total_records']:,}"
-            )
-            self.logger.logger.info(
-                f"📊 R² Score: {combined_result['best_model_metrics']['r2']:.3f}"
-            )
-            self.logger.logger.info(
-                f"🎯 Production Ready: {combined_result['production_ready']}"
-            )
-
-            return combined_result
-
-        except Exception as e:
-            error_msg = f"❌ MLModelTrainer failed: {str(e)}"
-            self.logger.logger.error(error_msg)
-
-            # Return error result in expected format
-            return {
-                "success": False,
-                "error": str(e),
-                "best_model": "training_failed",
-                "models_trained": [],
-                "best_model_metrics": {},
-                "data_stats": {},
-            }
-        finally:
-            self.logger.logger.info("🧹 MLModelTrainer cleanup completed")
-
-
-def run_ml_training(
-    spark: SparkSession,
-    input_date: str,
-    property_type: str = "house",
-    enable_sklearn_models: bool = True,
-) -> bool:
-    """
-    Run the ML training pipeline with performance optimizations
-
-    This function is designed to work efficiently with Spark and avoid
-    large task binary broadcasts by using optimized data handling.
-    """
-    try:
-        # Create trainer with optimized configuration
-        trainer = MLTrainer(spark_session=spark)
-
-        # Run training pipeline
-        result = trainer.run_training_pipeline(
-            input_date, property_type, enable_sklearn_models
+        all_features = numerical_features + low_card_cat
+        self.logger.logger.info(
+            f"📈 Linear Regression data ready with {len(all_features)} features"
         )
-
-        # Clean up trainer to release memory
-        trainer = None
-
-        return result["success"]
-
-    except Exception as e:
-        print(f"❌ ML Training failed: {e}")
-        return False
-
-
-def main():
-    """Main execution function with optimized Spark configuration"""
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description="ML Training Pipeline (Performance Optimized)"
-    )
-    parser.add_argument("--date", required=True, help="Training date (YYYY-MM-DD)")
-    parser.add_argument("--property-type", default="house", help="Property type")
-    parser.add_argument(
-        "--no-sklearn", action="store_true", help="Disable sklearn models"
-    )
-
-    args = parser.parse_args()
-
-    # Create optimized trainer
-    trainer = MLTrainer()
-
-    try:
-        # Run training with performance optimizations
-        result = trainer.run_training_pipeline(
-            args.date, args.property_type, enable_sklearn_models=not args.no_sklearn
-        )
-
-        if result["success"]:
-            print(f"✅ Training completed successfully!")
-            print(f"🏆 Best Model: {result['best_model']}")
-            print(f"📊 RMSE: {result['metrics']['rmse']:,.0f} VND")
-            print(f"📊 R²: {result['metrics']['r2']:.3f}")
-            print(f"💾 Model Path: {result['model_path']}")
-            print(f"🎯 Production Ready: {result['production_ready']}")
-            print(
-                f"⚡ Performance Optimized: {result['performance_optimizations']['broadcast_warnings_resolved']}"
-            )
-        else:
-            print("❌ Training failed!")
-            exit(1)
-
-    finally:
-        # Ensure proper cleanup
-        if hasattr(trainer, "spark") and trainer.spark:
-            trainer.spark.stop()
-
-
-if __name__ == "__main__":
-    main()
+        return df

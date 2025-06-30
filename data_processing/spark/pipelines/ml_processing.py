@@ -28,7 +28,7 @@ from common.config.spark_config import create_optimized_ml_spark_session
 
 # Import correct ML pipeline modules from ml/pipelines/
 from ml.pipelines.data_preparation import MLDataPreprocessor
-from ml.pipelines.model_training import run_ml_training
+from ml.pipelines.model_training import MLTrainer
 
 
 def run_data_preparation_stage(
@@ -83,14 +83,25 @@ def run_model_training_stage(
             )
             optimized_spark = spark
 
-        # Run ML training with prepared data
-        result = run_ml_training(
-            spark=optimized_spark, input_date=input_date, property_type=property_type
+        # Create ML trainer instance
+        ml_trainer = MLTrainer(spark_session=optimized_spark)
+
+        # Run ML training pipeline
+        result = ml_trainer.run_training_pipeline(
+            date=input_date, property_type=property_type
         )
+
         duration = (datetime.now() - start_time).total_seconds()
 
-        logger.logger.info(f"✅ Model Training completed: {duration:.1f}s")
-        return result
+        # Check if training was successful
+        if result and result.get("success", False):
+            logger.logger.info(f"✅ Model Training completed: {duration:.1f}s")
+            logger.logger.info(f"🏆 Best model: {result.get('best_model', 'N/A')}")
+            logger.logger.info(f"📊 R²: {result.get('metrics', {}).get('r2', 0):.3f}")
+            return True
+        else:
+            logger.log_error("❌ Model Training returned unsuccessful result")
+            return False
 
     except Exception as e:
         logger.log_error(f"❌ Model Training failed: {str(e)}")

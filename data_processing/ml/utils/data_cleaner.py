@@ -1168,3 +1168,171 @@ class DataCleaner:
             logger.info("✅ Final validation: All records passed critical data checks")
 
         return df
+
+    def prepare_tree_model_data(self, df: DataFrame) -> DataFrame:
+        """🌳 Prepare data specifically for tree-based models (XGBoost/LightGBM)
+
+        Key strategy: Keep NULL values for categorical features as tree models handle them natively
+        """
+        logger.info("🌳 Preparing data for tree-based models (XGBoost/LightGBM)")
+
+        # Define categorical features that should keep nulls for tree models
+        categorical_features = [
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",  # Keep as critical - still validate
+            "district_id",
+            "ward_id",
+        ]
+
+        # Replace -1 with null for tree models (except critical province_id)
+        for col_name in categorical_features:
+            if (
+                col_name in df.columns and col_name != "province_id"
+            ):  # Keep province_id validation
+                df = df.withColumn(
+                    col_name,
+                    when(col(col_name) == -1, lit(None)).otherwise(col(col_name)),
+                )
+                logger.info(
+                    f"🌳 Converted -1 to NULL for {col_name} (tree model friendly)"
+                )
+
+        # For numeric features, only fill critical missing values
+        numeric_features_critical = ["area", "latitude", "longitude"]
+        for col_name in numeric_features_critical:
+            if col_name in df.columns:
+                # Use median for critical numeric features
+                median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                df = df.fillna({col_name: median_val})
+                logger.info(f"🔢 Imputed critical {col_name} with median: {median_val}")
+
+        # For optional numeric features, keep nulls if tree models can handle them
+        optional_numeric = [
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+            "population_density",
+        ]
+        logger.info(
+            "🌳 Keeping NULLs for optional numeric features - tree models will handle"
+        )
+
+        return df
+
+    def prepare_linear_model_data(self, df: DataFrame) -> DataFrame:
+        """📈 Prepare data specifically for linear models and Random Forest
+
+        Key strategy: Full imputation as these models cannot handle NULL values
+        """
+        logger.info("📈 Preparing data for linear models (requires full imputation)")
+
+        # Define categorical features
+        categorical_features = [
+            "house_direction_code",
+            "legal_status_code",
+            "interior_code",
+            "province_id",
+            "district_id",
+            "ward_id",
+        ]
+
+        # For linear models, impute all missing values
+        for col_name in categorical_features:
+            if col_name in df.columns:
+                # Replace -1 and null with mode (most frequent value)
+                mode_val = (
+                    df.filter(col(col_name).isNotNull() & (col(col_name) != -1))
+                    .groupBy(col_name)
+                    .count()
+                    .orderBy(col("count").desc())
+                    .first()
+                )
+
+                if mode_val is not None:
+                    mode_value = mode_val[col_name]
+                    df = df.withColumn(
+                        col_name,
+                        when(
+                            (col(col_name).isNull()) | (col(col_name) == -1), mode_value
+                        ).otherwise(col(col_name)),
+                    )
+                    logger.info(f"📈 Imputed {col_name} with mode: {mode_value}")
+
+        # For numeric features, impute all missing values
+        numeric_features = [
+            "area",
+            "latitude",
+            "longitude",
+            "bedroom",
+            "bathroom",
+            "floor_count",
+            "total_rooms",
+            "area_per_room",
+            "bedroom_bathroom_ratio",
+            "population_density",
+        ]
+
+        for col_name in numeric_features:
+            if col_name in df.columns:
+                median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                if median_val is not None:
+                    df = df.fillna({col_name: median_val})
+                    logger.info(f"📈 Imputed {col_name} with median: {median_val}")
+
+        return df
+
+    def apply_province_downsampling(self, df: DataFrame) -> DataFrame:
+        """⚖️ Apply province-based downsampling like in Kaggle code"""
+        logger.info("⚖️ Applying province-based downsampling")
+
+        if "province_id" not in df.columns:
+            logger.warning("⚠️ No province_id column for downsampling")
+            return df
+
+        # Get province counts
+        province_counts = (
+            df.groupBy("province_id").count().orderBy(col("count").desc()).collect()
+        )
+
+        if len(province_counts) < 2:
+            logger.info("💡 Less than 2 provinces, no downsampling needed")
+            return df
+
+        top1_province = province_counts[0]["province_id"]
+        top2_count = province_counts[1]["count"]
+        max_allowed = int(top2_count * 1.2)
+
+        logger.info(
+            f"🏆 Top province {top1_province}: limiting to {max_allowed:,} records"
+        )
+
+        # Split data
+        df_top1 = df.filter(col("province_id") == top1_province)
+        df_others = df.filter(col("province_id") != top1_province)
+
+        # Sample top province if needed
+        top1_count = df_top1.count()
+        if top1_count > max_allowed:
+            df_top1_sampled = df_top1.sample(False, max_allowed / top1_count, seed=42)
+            logger.info(
+                f"📉 Downsampled province {top1_province}: {top1_count:,} → {max_allowed:,}"
+            )
+        else:
+            df_top1_sampled = df_top1
+            logger.info(f"✅ Province {top1_province} under limit: {top1_count:,}")
+
+        # Combine back
+        df_balanced = df_others.union(df_top1_sampled)
+
+        final_count = df_balanced.count()
+        initial_count = df.count()
+        logger.info(
+            f"⚖️ Downsampling completed: {initial_count:,} → {final_count:,} records"
+        )
+
+        return df_balanced

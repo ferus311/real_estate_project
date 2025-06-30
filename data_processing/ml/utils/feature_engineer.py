@@ -168,38 +168,38 @@ class FeatureEngineer:
         logger.info("🏠 Adding 3 universal property features")
 
         try:
-            # 1. Total rooms - UNIVERSAL CONCEPT
-            if all(col_name in df.columns for col_name in ["bedroom", "bathroom"]):
+            # 1. total_rooms = bedroom + bathroom (nếu cả hai không null)
+            if all(c in df.columns for c in ["bedroom", "bathroom"]):
                 df = df.withColumn(
                     "total_rooms",
-                    coalesce(col("bedroom"), lit(0))
-                    + coalesce(col("bathroom"), lit(0)),
+                    when(
+                        col("bedroom").isNotNull() & col("bathroom").isNotNull(),
+                        col("bedroom") + col("bathroom")
+                    )
                 )
-                logger.info("✅ Added total_rooms (bedroom + bathroom)")
+                logger.info("✅ Added total_rooms")
 
-            # 2. Area per room - UNIVERSAL DENSITY MEASURE
+            # 2. area_per_room = area / total_rooms (nếu đủ)
             if "area" in df.columns and "total_rooms" in df.columns:
                 df = df.withColumn(
                     "area_per_room",
                     when(
-                        col("total_rooms") > 0, col("area") / col("total_rooms")
-                    ).otherwise(
-                        col("area")
-                    ),  # If no rooms, area = total space
+                        col("area").isNotNull() & col("total_rooms").isNotNull() & (col("total_rooms") > 0),
+                        col("area") / col("total_rooms")
+                    )
                 )
-                logger.info("✅ Added area_per_room (area / total_rooms)")
+                logger.info("✅ Added area_per_room")
 
-            # 3. Room ratio - UNIVERSAL PROPERTY CHARACTERISTIC
-            if all(col_name in df.columns for col_name in ["bedroom", "bathroom"]):
+            # 3. bedroom_bathroom_ratio = bedroom / bathroom (nếu đủ, bathroom > 0)
+            if all(c in df.columns for c in ["bedroom", "bathroom"]):
                 df = df.withColumn(
                     "bedroom_bathroom_ratio",
                     when(
-                        col("bathroom") > 0, col("bedroom") / col("bathroom")
-                    ).otherwise(
-                        col("bedroom")
-                    ),  # If no bathrooms, just bedroom count
+                        col("bedroom").isNotNull() & col("bathroom").isNotNull() & (col("bathroom") > 0),
+                        col("bedroom") / col("bathroom")
+                    )
                 )
-                logger.info("✅ Added bedroom_bathroom_ratio (bedroom / bathroom)")
+                logger.info("✅ Added bedroom_bathroom_ratio")
 
         except Exception as e:
             logger.error(f"❌ Error adding property features: {str(e)}")
