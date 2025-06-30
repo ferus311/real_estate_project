@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import analytics_views
 
 urlpatterns = [
     # Market analytics
@@ -14,4 +15,25 @@ urlpatterns = [
     path("area-distribution/", views.area_distribution, name="area_distribution"),
     # Dashboard
     path("dashboard-summary/", views.dashboard_summary, name="dashboard_summary"),
+    # New enhanced analytics APIs
+    path(
+        "price_distribution_by_location/",
+        analytics_views.get_price_distribution_by_location,
+        name="price_distribution_by_location",
+    ),
+    path(
+        "market_overview_enhanced/",
+        analytics_views.get_market_overview,
+        name="market_overview_enhanced",
+    ),
+    path(
+        "district_comparison/",
+        analytics_views.get_district_comparison,
+        name="district_comparison",
+    ),
+    path(
+        "refresh_model/",
+        analytics_views.refresh_model_status,
+        name="refresh_model_status",
+    ),
 ]

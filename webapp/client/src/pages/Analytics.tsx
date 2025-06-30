@@ -44,6 +44,7 @@ export default function Analytics() {
     const [locationStats, setLocationStats] = useState<any[]>([]);
     const [priceTrends, setPriceTrends] = useState<any[]>([]);
     const [areaDistribution, setAreaDistribution] = useState<any[]>([]);
+    const [pricePerM2Distribution, setPricePerM2Distribution] = useState<any[]>([]);
     const [dashboardSummary, setDashboardSummary] = useState<any>(null); const [selectedProvince, setSelectedProvince] = useState<string>('');
     const [selectedDistrict, setSelectedDistrict] = useState<string>('');
     const [selectedTimeRange, setSelectedTimeRange] = useState<string>('6months');
@@ -116,6 +117,18 @@ export default function Analytics() {
             // Area Distribution - áp dụng filter
             const areaData = await realEstateAPI.analytics.areaDistribution(filterParams);
             setAreaDistribution(areaData.area_distribution || []);
+
+            // Price per m2 Distribution - sử dụng priceDistributionByLocation
+            if (selectedProvince) {
+                const pricePerM2Params: any = { province_id: selectedProvince };
+                if (selectedDistrict) {
+                    pricePerM2Params.district_id = selectedDistrict;
+                }
+                const pricePerM2Data = await realEstateAPI.analytics.priceDistributionByLocation(pricePerM2Params);
+                setPricePerM2Distribution(pricePerM2Data.data?.price_per_m2_distribution || []);
+            } else {
+                setPricePerM2Distribution([]);
+            }
 
             notification.success({
                 message: '📊 Tải dữ liệu thành công',
@@ -552,6 +565,52 @@ export default function Analytics() {
                                     </div>
                                 ) : (
                                     <Empty description="Không có dữ liệu phân bổ diện tích" />
+                                )}
+                            </Card>
+                        </Col>
+
+                        {/* Price per m2 Distribution */}
+                        <Col xs={24} lg={12}>
+                            <Card
+                                title={
+                                    <Space>
+                                        <DollarOutlined />
+                                        Phân bổ giá/m²
+                                    </Space>
+                                }
+                                className="shadow-lg"
+                            >
+                                {pricePerM2Distribution.length > 0 ? (
+                                    <div className="space-y-4">
+                                        {pricePerM2Distribution.map((item, index) => (
+                                            <div key={index} className="flex justify-between items-center p-3 bg-gray-50 rounded">
+                                                <div>
+                                                    <Text strong>{item.range || `${formatPrice(item.min_price_per_m2)} - ${formatPrice(item.max_price_per_m2)}`}</Text>
+                                                    <br />
+                                                    <Text type="secondary">
+                                                        {item.avg_price_per_m2 ? `TB: ${formatPrice(item.avg_price_per_m2)} VND/m²` : 'N/A'}
+                                                    </Text>
+                                                </div>
+                                                <div className="flex items-center space-x-2">
+                                                    <Progress
+                                                        percent={Math.round((item.count / Math.max(...pricePerM2Distribution.map(p => p.count))) * 100)}
+                                                        showInfo={false}
+                                                        strokeColor="#FF8042"
+                                                        style={{ width: 100 }}
+                                                    />
+                                                    <Text strong>{formatNumber(item.count)}</Text>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <Empty
+                                        description={
+                                            !selectedProvince ?
+                                                "Vui lòng chọn tỉnh/thành để xem phân bổ giá/m²" :
+                                                "Không có dữ liệu phân bổ giá/m²"
+                                        }
+                                    />
                                 )}
                             </Card>
                         </Col>

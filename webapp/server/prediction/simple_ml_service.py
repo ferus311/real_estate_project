@@ -547,7 +547,7 @@ class SimpleModelLoader:
             return {"error": f"Mock prediction failed: {e}"}
 
     def predict_price(
-        self, input_data: Dict, model_name: str = "linear_regression"
+        self, input_data: Dict, model_name: str = "xgboost"
     ) -> Dict[str, Any]:
         """Predict price using specified model or mock prediction"""
         try:
@@ -563,26 +563,51 @@ class SimpleModelLoader:
                 # Fix XGBoost GPU issue - force CPU mode
                 if hasattr(model, "set_param"):
                     try:
-                        model.set_param("gpu_id", -1)  # Force CPU
-                        model.set_param("tree_method", "hist")  # Use CPU tree method
-                    except Exception as gpu_fix_error:
-                        logger.warning(
-                            f"⚠️ Could not set CPU mode for {model_name}: {gpu_fix_error}"
-                        )
+                        model.set_param({"device": "cpu"})
+                    except Exception:
+                        pass  # Ignore if model doesn't support set_param
+
+                # Helper function to convert -1 to None for categorical features (same as training)
+                def convert_categorical(value, default_val):
+                    """Convert -1 to None for categorical features (tree models handle None natively)"""
+                    if value == -1 or value is None or value == "":
+                        return None  # Tree models handle None/null natively
+                    try:
+                        return int(value)
+                    except (ValueError, TypeError):
+                        return None
+
+                def convert_numeric(value, default_val):
+                    """Convert numeric values with proper default handling"""
+                    if value is None or value == "" or value == -1:
+                        return float(default_val)
+                    try:
+                        return float(value)
+                    except (ValueError, TypeError):
+                        return float(default_val)
 
                 # Prepare features - MUST match training feature order (16 features total)
-                area = float(input_data.get("area", 80))
-                latitude = float(input_data.get("latitude", 10.762622))
-                longitude = float(input_data.get("longitude", 106.660172))
-                bedroom = int(input_data.get("bedroom", 3))
-                bathroom = int(input_data.get("bathroom", 2))
-                floor_count = int(input_data.get("floor_count", 3))
-                house_direction_code = int(input_data.get("house_direction_code", 3))
-                legal_status_code = int(input_data.get("legal_status_code", 1))
-                interior_code = int(input_data.get("interior_code", 2))
-                province_id = int(input_data.get("province_id", 79))
-                district_id = int(input_data.get("district_id", 769))
-                ward_id = int(input_data.get("ward_id", 27000))
+                # Apply same -1 to null conversion as training
+                area = convert_numeric(input_data.get("area"), 80)
+                latitude = convert_numeric(input_data.get("latitude"), 10.762622)
+                longitude = convert_numeric(input_data.get("longitude"), 106.660172)
+                bedroom = convert_numeric(input_data.get("bedroom"), 3)
+                bathroom = convert_numeric(input_data.get("bathroom"), 2)
+                floor_count = convert_numeric(input_data.get("floor_count"), 3)
+
+                # Categorical features: convert -1 to None (same as training)
+                house_direction_code = convert_categorical(
+                    input_data.get("house_direction_code"), 3
+                )
+                legal_status_code = convert_categorical(
+                    input_data.get("legal_status_code"), 1
+                )
+                interior_code = convert_categorical(input_data.get("interior_code"), 2)
+                province_id = int(
+                    input_data.get("province_id", 79)
+                )  # Critical - must not be null
+                district_id = convert_categorical(input_data.get("district_id"), 769)
+                ward_id = convert_categorical(input_data.get("ward_id"), 27000)
 
                 # Engineered features (must match training)
                 total_rooms = bedroom + bathroom
@@ -914,6 +939,193 @@ class SimpleModelLoader:
                 },
             ],
             "note": "All features are required for accurate prediction",
+        }
+
+    def reload_models(self, force_reload: bool = False) -> Dict[str, Any]:
+        """Reload models from HDFS - useful for updating to latest models"""
+        try:
+            if force_reload:
+                # Clear current models
+                self._loaded_models.clear()
+                self._model_registry = None
+                self._latest_model_path = None
+                logger.info("🔄 Force reload - cleared existing models")
+
+            # Reload latest model path
+            self._latest_model_path = self.find_latest_model_path()
+            if not self._latest_model_path:
+                return {"success": False, "error": "No model path found"}
+
+            # Reload models
+            load_results = self.load_all_models()
+
+            return {
+                "success": True,
+                "latest_model_path": self._latest_model_path,
+                "loaded_models": list(self._loaded_models.keys()),
+                "load_results": load_results,
+                "reload_time": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error reloading models: {e}")
+            return {"success": False, "error": str(e)}
+
+    def find_model_by_date(
+        self, target_date: str, property_type: str = "house"
+    ) -> Optional[str]:
+        """Find model by specific date or closest available date"""
+        if not self.hdfs_available:
+            logger.warning("⚠️ HDFS not available")
+            return None
+
+        try:
+            from datetime import datetime, timedelta
+
+            base_path = f"{self.base_model_path}/{property_type}"
+
+            # Parse target date
+            try:
+                target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            except ValueError:
+                logger.error(f"❌ Invalid date format: {target_date}. Use YYYY-MM-DD")
+                return None
+
+            # List all available date directories
+            if not self.hdfs_client.status(base_path, strict=False):
+                logger.error(f"❌ Model base path not found: {base_path}")
+                return None
+
+            available_dates = []
+            for item in self.hdfs_client.list(base_path):
+                try:
+                    date_dt = datetime.strptime(item, "%Y-%m-%d")
+                    available_dates.append((item, date_dt))
+                except ValueError:
+                    continue
+
+            if not available_dates:
+                logger.error(f"❌ No valid date directories found in {base_path}")
+                return None
+
+            # Sort by date
+            available_dates.sort(key=lambda x: x[1])
+
+            # Find exact match first
+            for date_str, date_dt in available_dates:
+                if date_dt.date() == target_dt.date():
+                    model_path = f"{base_path}/{date_str}"
+                    logger.info(f"✅ Found exact date match: {model_path}")
+                    return model_path
+
+            # Find closest date within 7 days
+            closest_date = None
+            min_diff = timedelta(days=999)
+
+            for date_str, date_dt in available_dates:
+                diff = abs(date_dt - target_dt)
+                if diff <= timedelta(days=7) and diff < min_diff:
+                    min_diff = diff
+                    closest_date = (date_str, date_dt)
+
+            if closest_date:
+                model_path = f"{base_path}/{closest_date[0]}"
+                logger.info(
+                    f"✅ Found closest date match: {model_path} (diff: {min_diff.days} days)"
+                )
+                return model_path
+            else:
+                logger.warning(f"⚠️ No models found within 7 days of {target_date}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error finding model by date: {e}")
+            return None
+
+    def load_models_by_date(
+        self, target_date: str, property_type: str = "house"
+    ) -> Dict[str, Any]:
+        """Load models from a specific date or closest available"""
+        try:
+            # Find model path for the target date
+            model_path = self.find_model_by_date(target_date, property_type)
+            if not model_path:
+                return {
+                    "success": False,
+                    "error": f"No models found for date {target_date}",
+                }
+
+            # Clear existing models
+            self._loaded_models.clear()
+            self._model_registry = None
+
+            # Set the new model path
+            self._latest_model_path = model_path
+
+            # Load model registry for the specific date
+            self._model_registry = self.load_model_registry(model_path)
+
+            # Load models
+            load_results = self.load_all_models()
+
+            return {
+                "success": True,
+                "target_date": target_date,
+                "actual_model_path": model_path,
+                "loaded_models": list(self._loaded_models.keys()),
+                "load_results": load_results,
+                "model_registry": self._model_registry,
+                "load_time": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Error loading models by date: {e}")
+            return {"success": False, "error": str(e)}
+
+    def get_available_model_dates(self, property_type: str = "house") -> List[str]:
+        """Get list of available model dates"""
+        if not self.hdfs_available:
+            return []
+
+        try:
+            base_path = f"{self.base_model_path}/{property_type}"
+
+            if not self.hdfs_client.status(base_path, strict=False):
+                return []
+
+            available_dates = []
+            for item in self.hdfs_client.list(base_path):
+                try:
+                    # Validate date format
+                    datetime.strptime(item, "%Y-%m-%d")
+                    available_dates.append(item)
+                except ValueError:
+                    continue
+
+            available_dates.sort(reverse=True)  # Latest first
+            return available_dates
+
+        except Exception as e:
+            logger.error(f"❌ Error getting available model dates: {e}")
+            return []
+
+    def get_current_model_info(self) -> Dict[str, Any]:
+        """Get information about currently loaded models"""
+        return {
+            "hdfs_available": self.hdfs_available,
+            "current_model_path": self._latest_model_path,
+            "loaded_models": {
+                name: {
+                    "type": info.get("type"),
+                    "metrics": info.get("metrics", {}),
+                    "loaded_at": info.get("loaded_at"),
+                }
+                for name, info in self._loaded_models.items()
+            },
+            "model_registry": self._model_registry,
+            "available_dates": self.get_available_model_dates(),
+            "hdfs_url": self.hdfs_url,
+            "base_model_path": self.base_model_path,
         }
 
 

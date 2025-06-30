@@ -97,6 +97,10 @@ export default function Home() {
     const [geocodingLoading, setGeocodingLoading] = useState(false);
     const [currentCoordinates, setCurrentCoordinates] = useState({ lat: 10.762622, lng: 106.660172 });
 
+    // Model management state
+    const [modelLoading, setModelLoading] = useState(false);
+    const [modelInfo, setModelInfo] = useState<any>(null);
+
     // Auto-geocoding timer
     const [geocodingTimer, setGeocodingTimer] = useState<NodeJS.Timeout | null>(null);
 
@@ -110,7 +114,15 @@ export default function Home() {
                 console.error('Failed to load market stats:', error);
             }
         };
-        loadMarketStats();
+
+        const loadInitialData = async () => {
+            await Promise.all([
+                loadMarketStats(),
+                loadModelInfo()
+            ]);
+        };
+
+        loadInitialData();
 
         // Initialize coordinates from form default values
         const initLat = form.getFieldValue('latitude') || 10.762622;
@@ -323,6 +335,38 @@ export default function Home() {
             return `${(price / 1000000).toFixed(0)} triệu VND`;
         }
         return `${price.toLocaleString()} VND`;
+    };
+
+    // Refresh ML models
+    const refreshModels = async () => {
+        setModelLoading(true);
+        try {
+            const response = await realEstateAPI.prediction.reloadModels(true);
+            setModelInfo(response);
+
+            notification.success({
+                message: 'Model đã được làm mới',
+                description: 'ML models đã được cập nhật và tải lại thành công',
+            });
+        } catch (error) {
+            console.error('Error refreshing models:', error);
+            notification.error({
+                message: 'Lỗi làm mới model',
+                description: 'Không thể làm mới ML models. Vui lòng thử lại sau.',
+            });
+        } finally {
+            setModelLoading(false);
+        }
+    };
+
+    // Load current model info on mount
+    const loadModelInfo = async () => {
+        try {
+            const response = await realEstateAPI.prediction.getCurrentModelInfo();
+            setModelInfo(response.data);
+        } catch (error) {
+            console.error('Error loading model info:', error);
+        }
     };
 
     // Get best prediction (based on predicted price comparison)
@@ -636,8 +680,7 @@ export default function Home() {
                             </h1>
                             <p className="text-xl opacity-90 max-w-2xl mx-auto">
                                 Dự đoán giá nhà thông minh với AI - Sử dụng XGBoost & LightGBM models
-                            </p>
-                            <div className="mt-8 flex justify-center space-x-8">
+                            </p>                            <div className="mt-8 flex justify-center space-x-8">
                                 <Statistic
                                     title={<span className="text-blue-200">Tổng bất động sản</span>}
                                     value={marketStats?.total_properties || "fake"}
@@ -651,6 +694,32 @@ export default function Home() {
                                     prefix={<BankOutlined />}
                                     valueStyle={{ color: 'white' }}
                                 />
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="mt-8 flex justify-center space-x-4">
+                                <Button
+                                    type="default"
+                                    size="large"
+                                    icon={<ThunderboltOutlined />}
+                                    loading={modelLoading}
+                                    onClick={refreshModels}
+                                    className="bg-white bg-opacity-20 border-white text-white hover:bg-white hover:text-blue-600"
+                                >
+                                    Làm mới Model
+                                </Button>
+                                {modelInfo && (
+                                    <Tooltip title={`Model cập nhật: ${new Date(modelInfo.last_trained || modelInfo.created_date).toLocaleString('vi-VN')}`}>
+                                        <Button
+                                            type="default"
+                                            size="large"
+                                            icon={<InfoCircleOutlined />}
+                                            className="bg-white bg-opacity-20 border-white text-white hover:bg-white hover:text-blue-600"
+                                        >
+                                            Model: {modelInfo.status || 'Active'}
+                                        </Button>
+                                    </Tooltip>
+                                )}
                             </div>
                         </div>
                     </div>

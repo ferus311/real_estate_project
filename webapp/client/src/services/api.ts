@@ -125,12 +125,15 @@ export interface SearchFilters {
   province?: string;
   district?: string;
   ward?: string;
+  street?: string;
+  keyword?: string;
   price_min?: number;
   price_max?: number;
   area_min?: number;
   area_max?: number;
   bedroom_min?: number;
   bedroom_max?: number;
+  bedroom?: number;
   bathroom_min?: number;
   bathroom_max?: number;
   limit?: number;
@@ -138,6 +141,7 @@ export interface SearchFilters {
   page_size?: number;
   sort_by?: string;
   sort_order?: string;
+  offset?: number;
 }
 
 export interface ApiResponse<T> {
@@ -243,6 +247,37 @@ export const realEstateAPI = {
       }
 
       return results;
+    },
+
+    // Model Management APIs
+    reloadModels: async (forceReload: boolean = false): Promise<any> => {
+      const response = await apiClient.post('/prediction/reload_models/', { force_reload: forceReload });
+      return response.data;
+    },
+
+    loadModelsByDate: async (targetDate: string, propertyType: string = 'house'): Promise<any> => {
+      const response = await apiClient.post('/prediction/load_models_by_date/', {
+        target_date: targetDate,
+        property_type: propertyType
+      });
+      return response.data;
+    },
+
+    getAvailableDates: async (propertyType: string = 'house'): Promise<any> => {
+      const response = await apiClient.get('/prediction/available_dates/', {
+        params: { property_type: propertyType }
+      });
+      return response.data;
+    },
+
+    getCurrentModelInfo: async (): Promise<any> => {
+      const response = await apiClient.get('/prediction/model-info/');
+      return response.data;
+    },
+
+    predictWithLatestModel: async (data: PredictionInput & { model_name: string }): Promise<any> => {
+      const response = await apiClient.post('/prediction/predict_latest/', data);
+      return response.data;
     },
   },
 
@@ -366,7 +401,32 @@ export const realEstateAPI = {
       const response = await apiClient.get('/analytics/dashboard-summary/', { params });
       return response.data;
     },
+
+    // Enhanced analytics APIs
+    priceDistributionByLocation: async (params: { province_id: string; district_id?: string }): Promise<any> => {
+      const response = await apiClient.get('/analytics/price_distribution_by_location/', { params });
+      return response.data;
+    },
+
+    marketOverviewEnhanced: async (): Promise<any> => {
+      const response = await apiClient.get('/analytics/market_overview_enhanced/');
+      return response.data;
+    },
+
+    districtComparison: async (provinceId: string): Promise<any> => {
+      const response = await apiClient.get('/analytics/district_comparison/', {
+        params: { province_id: provinceId }
+      });
+      return response.data;
+    },
+
+    refreshModel: async (): Promise<any> => {
+      const response = await apiClient.post('/analytics/refresh_model/');
+      return response.data;
+    },
   },
+
+  // Model Management APIs (moved to prediction section)
 };
 
 export default realEstateAPI;

@@ -34,6 +34,7 @@ def advanced_search(request):
             district,
             ward,
             street,
+            location,
             latitude,
             longitude,
             bedroom,
@@ -93,6 +94,10 @@ def advanced_search(request):
             filters.append("bedroom >= %s")
             query_params.append(int(params["bedroom_min"]))
 
+        if params.get("bedroom"):
+            filters.append("bedroom = %s")
+            query_params.append(int(params["bedroom"]))
+
         if params.get("bathroom_min"):
             filters.append("bathroom >= %s")
             query_params.append(int(params["bathroom_min"]))
@@ -108,11 +113,12 @@ def advanced_search(request):
             query_params.append(f"%{params['legal_status']}%")
 
         # Full-text search
-        if params.get("search_text"):
+        if params.get("search_text") or params.get("keyword"):
+            search_keyword = params.get("search_text") or params.get("keyword")
             filters.append(
                 "(title ILIKE %s OR description ILIKE %s OR location ILIKE %s)"
             )
-            search_term = f"%{params['search_text']}%"
+            search_term = f"%{search_keyword}%"
             query_params.extend([search_term, search_term, search_term])
 
         # Add filters to query
@@ -217,7 +223,7 @@ def search_by_location(request):
         query = """
         SELECT
             id, title, price, area, price_per_m2,
-            province, district, ward, street,
+            province, district, ward, street, location,
             bedroom, bathroom, house_type,
             posted_date, url
         FROM properties
