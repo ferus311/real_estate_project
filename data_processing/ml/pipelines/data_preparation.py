@@ -66,7 +66,7 @@ class MLDataPreprocessor:
             "correlation_threshold": 0.95,  # Drop highly correlated features
             "variance_threshold": 0.01,  # Drop low variance features
             "feature_selection_k": 50,  # Top K features to select
-            "lookback_days": 30,  # Days to include for training data
+            "lookback_days": 60,  # Days to include for training data
             # Price validation ranges (based on actual data analysis - in VND)
             "price_min": 500000000,  # 500M VND - minimum reasonable price
             "price_max": 100000000000,  # 100B VND - maximum reasonable price

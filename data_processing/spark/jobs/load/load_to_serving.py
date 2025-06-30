@@ -11,6 +11,8 @@ from pyspark.sql.functions import (
     coalesce,
     row_number,
     desc,
+    substring,
+    length,
 )
 from pyspark.sql.window import Window
 import sys
@@ -138,7 +140,21 @@ def extract_from_gold(spark: SparkSession, input_date: str, property_type: str, 
 
 
 def transform_for_serving(gold_df: DataFrame, logger):
-    """Transform dữ liệu từ Gold layer cho PostgreSQL serving layer"""
+    """Transform dữ liệu từ Gold layer cho PostgreSQL serving layer
+
+    Áp dụng giới hạn ký tự cho các trường text để tránh lỗi database:
+    - title: tối đa 500 ký tự
+    - description: tối đa 2000 ký tự
+    - location: tối đa 500 ký tự
+    - province: tối đa 100 ký tự
+    - district: tối đa 100 ký tự
+    - ward: tối đa 200 ký tự
+    - street: tối đa 300 ký tự
+    - house_direction: tối đa 50 ký tự
+    - legal_status: tối đa 100 ký tự
+    - interior: tối đa 100 ký tự
+    - house_type: tối đa 100 ký tự
+    """
 
     logger.logger.info("🔄 Transforming data for serving layer...")
 
@@ -154,10 +170,22 @@ def transform_for_serving(gold_df: DataFrame, logger):
         col("location"),
         col("data_type"),
         # Location information
-        col("province"),
-        col("district"),
-        col("ward"),
-        col("street"),
+        # Giới hạn province tối đa 100 ký tự
+        when(col("province").isNull(), col("province"))
+        .otherwise(substring(col("province"), 1, 100))
+        .alias("province"),
+        # Giới hạn district tối đa 100 ký tự
+        when(col("district").isNull(), col("district"))
+        .otherwise(substring(col("district"), 1, 100))
+        .alias("district"),
+        # Giới hạn ward tối đa 200 ký tự để tránh lỗi database
+        when(col("ward").isNull(), col("ward"))
+        .otherwise(substring(col("ward"), 1, 200))
+        .alias("ward"),
+        # Giới hạn street tối đa 300 ký tự
+        when(col("street").isNull(), col("street"))
+        .otherwise(substring(col("street"), 1, 200))
+        .alias("street"),
         # Location IDs
         col("province_id").cast("int"),
         col("district_id").cast("int"),
@@ -181,13 +209,25 @@ def transform_for_serving(gold_df: DataFrame, logger):
         col("facade_width").cast("double"),
         col("road_width").cast("double"),
         # Property characteristics
-        col("house_direction"),
+        # Giới hạn house_direction tối đa 50 ký tự
+        when(col("house_direction").isNull(), col("house_direction"))
+        .otherwise(substring(col("house_direction"), 1, 50))
+        .alias("house_direction"),
         col("house_direction_code").cast("int"),
-        col("legal_status"),
+        # Giới hạn legal_status tối đa 100 ký tự
+        when(col("legal_status").isNull(), col("legal_status"))
+        .otherwise(substring(col("legal_status"), 1, 100))
+        .alias("legal_status"),
         col("legal_status_code").cast("int"),
-        col("interior"),
+        # Giới hạn interior tối đa 100 ký tự
+        when(col("interior").isNull(), col("interior"))
+        .otherwise(substring(col("interior"), 1, 100))
+        .alias("interior"),
         col("interior_code").cast("int"),
-        col("house_type"),
+        # Giới hạn house_type tối đa 100 ký tự
+        when(col("house_type").isNull(), col("house_type"))
+        .otherwise(substring(col("house_type"), 1, 100))
+        .alias("house_type"),
         col("house_type_code").cast("int"),
         # Timestamps
         col("posted_date").cast("timestamp"),

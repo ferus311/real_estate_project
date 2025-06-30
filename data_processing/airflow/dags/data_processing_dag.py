@@ -10,7 +10,7 @@ import re
 
 
 # Cấu hình chung - có thể thay đổi dễ dàng
-# PROCESSING_DATE = "2025-06-04"  # Sử dụng execution date của Airflow
+# PROCESSING_DATE = "2025-06-12"  # Sử dụng execution date của Airflow
 
 default_args = {
     "owner": "airflow",
@@ -62,7 +62,7 @@ extraction_stage = DockerOperator(
 transformation_stage = DockerOperator(
     task_id="stage_2_transformation",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py  --transform-only",
+    command=f"python /app/pipelines/daily_processing.py --transform-only",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,
@@ -76,7 +76,7 @@ transformation_stage = DockerOperator(
 unification_stage = DockerOperator(
     task_id="stage_3_unification",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py  --unify-only",
+    command=f"python /app/pipelines/daily_processing.py --unify-only",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,
@@ -90,7 +90,7 @@ unification_stage = DockerOperator(
 load_stage = DockerOperator(
     task_id="stage_4_load",
     image="spark-processor:latest",
-    command=f"python /app/pipelines/daily_processing.py  --load-only ",
+    command=f"python /app/pipelines/daily_processing.py --load-only ",
     network_mode="hdfs_network",
     api_version="auto",
     auto_remove=True,

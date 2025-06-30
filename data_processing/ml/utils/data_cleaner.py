@@ -122,8 +122,8 @@ class DataCleaner:
         df = self.optimize_data_types(df)
 
         # Debug after type conversion
-        logger.info("🔍 Data quality after type conversion:")
-        self.debug_data_quality(df)
+        # logger.info("🔍 Data quality after type conversion:")
+        # self.debug_data_quality(df)
 
         # Step 3: Comprehensive duplicate removal
         df = self.remove_duplicates_comprehensive(df)
@@ -175,8 +175,16 @@ class DataCleaner:
             "longitude": {"min_value": 102.0, "max_value": 110.0},  # Vietnam bounds
             "province_id": {
                 "min_value": 1,
-                "max_value": 96,
+                "max_value": 63,
             },  # Valid province IDs (no -1)
+        }
+
+        # Define optional columns that can be null but must be valid when present
+        optional_columns = {
+            "floor_count": {
+                "min_value": 1,
+                "max_value": 99,
+            },  # 1-99 floors (reasonable building height) - null is OK
         }
 
         logger.info("🚨 STRICT VALIDATION: Removing records with invalid critical data")
@@ -248,6 +256,35 @@ class DataCleaner:
             logger.warning(
                 f"⚠️ HIGH REMOVAL RATE: {total_removed/initial_count*100:.1f}% of data removed"
             )
+
+        # Validate optional columns (can be null, but must be valid when present)
+        logger.info("🔧 OPTIONAL VALIDATION: Checking optional columns when present")
+
+        for col_name, constraints in optional_columns.items():
+            if col_name in df.columns:
+                before_count = df.count()
+
+                # Only validate non-null values - null is allowed for optional columns
+                df = df.filter(
+                    col(col_name).isNull()  # Allow null values
+                    | (
+                        (col(col_name).isNotNull())
+                        & (col(col_name) >= constraints["min_value"])
+                        & (col(col_name) <= constraints["max_value"])
+                    )
+                )
+
+                after_count = df.count()
+                removed = before_count - after_count
+                if removed > 0:
+                    logger.info(
+                        f"🔧 Removed {removed:,} records with invalid {col_name} (null values kept)"
+                    )
+                    logger.info(
+                        f"   Valid range: {constraints['min_value']} - {constraints['max_value']} or null"
+                    )
+            else:
+                logger.info(f"💡 Optional column {col_name} not in dataset - OK")
 
         return df
 
@@ -475,8 +512,8 @@ class DataCleaner:
         return df
 
     def _remove_location_duplicates(self, df: DataFrame) -> DataFrame:
-        """Remove duplicates that are very close geographically"""
-        logger.info("�️ Removing location-based duplicates")
+        """Remove duplicates that are very close geographically AND have similar properties"""
+        logger.info("🗺️ Removing location-based duplicates (strict similarity check)")
 
         if not all(
             col in df.columns for col in ["latitude", "longitude", "price", "area"]
@@ -484,55 +521,91 @@ class DataCleaner:
             logger.warning("⚠️ Missing location columns for geographic deduplication")
             return df
 
-        # Create location clusters (group nearby properties)
+        # Create detailed similarity fingerprint for nearby properties
+        # Only consider duplicates if they are BOTH geographically close AND property-wise similar
         df = df.withColumn(
-            "location_cluster",
+            "location_similarity_key",
             concat_ws(
-                "_",
-                # Group by rounded coordinates (approximately 100m precision)
-                round(col("latitude") * 10000).cast("string"),
-                round(col("longitude") * 10000).cast("string"),
-                # Add price range to avoid grouping very different properties
-                when(col("price") < 1000000000, "low")
-                .when(col("price") < 5000000000, "mid")
-                .otherwise("high"),
+                "|",
+                # 1. Geographic proximity (approximately 50m precision - tighter than before)
+                round(col("latitude") * 20000).cast(
+                    "string"
+                ),  # More precise clustering
+                round(col("longitude") * 20000).cast("string"),
+                # 2. Property characteristics must be very similar
+                round(col("area") / 10).cast("string"),  # Area within 10m² buckets
+                round(col("price") / 50000000).cast(
+                    "string"
+                ),  # Price within 50M VND buckets
+                # 3. Physical characteristics (if available) - use coalesce for missing values
+                coalesce(col("bedroom"), lit(-1)).cast("string"),
+                coalesce(col("bathroom"), lit(-1)).cast("string"),
+                coalesce(col("floor_count"), lit(-1)).cast("string"),
+                # 4. Administrative location must match exactly
+                coalesce(col("province_id"), lit(-1)).cast("string"),
+                coalesce(col("district_id"), lit(-1)).cast("string"),
+                # Ward có thể khác nhau trong cùng một khu vực nhỏ
+                # coalesce(col("ward_id"), lit(-1)).cast("string"),
             ),
         )
 
-        # Within each cluster, look for very similar properties
-        window_spec = Window.partitionBy("location_cluster")
+        # Count properties with same similarity key
+        window_spec = Window.partitionBy("location_similarity_key")
+        df = df.withColumn("similarity_group_size", count("*").over(window_spec))
 
-        # Calculate cluster statistics
-        df = df.withColumn("cluster_size", count("*").over(window_spec))
+        # Separate into groups and singles
+        df_groups = df.filter(col("similarity_group_size") > 1)
+        df_singles = df.filter(col("similarity_group_size") == 1)
 
-        # Only process clusters with multiple properties
-        df_clusters = df.filter(col("cluster_size") > 1)
-        df_singles = df.filter(col("cluster_size") == 1)
+        initial_groups_count = df_groups.count() if df_groups.count() > 0 else 0
 
-        if df_clusters.count() > 0:
-            # For clustered properties, keep the one with best data completeness
-            # NOTE: data_quality_score hasn't been created yet, so use alternative ranking
-            cluster_window = Window.partitionBy("location_cluster").orderBy(
-                col("id").asc()  # Consistent tie-breaking (lower ID = older/better)
+        if initial_groups_count > 0:
+            logger.info(
+                f"🔍 Found {initial_groups_count:,} properties in similarity groups"
             )
 
-            df_clusters = (
-                df_clusters.withColumn(
-                    "cluster_rank", row_number().over(cluster_window)
-                )
-                .filter(col("cluster_rank") == 1)
-                .drop("cluster_rank")
+            # For grouped properties, apply additional strict checks before removing
+            # Keep the property with the most complete and reliable data
+            group_window = Window.partitionBy("location_similarity_key").orderBy(
+                # Primary: Prefer properties with more complete data
+                (
+                    when(col("price").isNotNull(), 1).otherwise(0)
+                    + when(col("area").isNotNull(), 1).otherwise(0)
+                    + when(col("latitude").isNotNull(), 1).otherwise(0)
+                    + when(col("longitude").isNotNull(), 1).otherwise(0)
+                    + when(
+                        col("bedroom").isNotNull() & (col("bedroom") > 0), 1
+                    ).otherwise(0)
+                    + when(
+                        col("bathroom").isNotNull() & (col("bathroom") > 0), 1
+                    ).otherwise(0)
+                ).desc(),
+                # Secondary: Prefer older records (lower ID)
+                col("id").asc(),
             )
 
-        # Combine back
-        if df_singles.count() > 0 and df_clusters.count() > 0:
-            df = df_singles.union(df_clusters)
+            df_groups = (
+                df_groups.withColumn("group_rank", row_number().over(group_window))
+                .filter(col("group_rank") == 1)
+                .drop("group_rank")
+            )
+
+            removed_count = initial_groups_count - df_groups.count()
+            if removed_count > 0:
+                logger.info(f"🗑️ Removed {removed_count:,} location-based duplicates")
+
+        # Combine results
+        if df_singles.count() > 0 and df_groups.count() > 0:
+            df = df_singles.union(df_groups)
         elif df_singles.count() > 0:
             df = df_singles
-        elif df_clusters.count() > 0:
-            df = df_clusters
+        elif df_groups.count() > 0:
+            df = df_groups
+        else:
+            logger.warning("⚠️ No records remaining after location deduplication")
 
-        df = df.drop("location_cluster", "cluster_size")
+        # Clean up temporary columns
+        df = df.drop("location_similarity_key", "similarity_group_size")
 
         return df
 
@@ -556,7 +629,6 @@ class DataCleaner:
             "province_id",  # Essential location feature
             "id",  # Metadata
         }
-        # Note: price_per_m2 REMOVED - it causes data leakage (calculated from target price)
 
         # Calculate missing percentages
         missing_stats = {}
@@ -652,38 +724,38 @@ class DataCleaner:
                         )
 
                     # Special handling for room count fields - use median (smart default)
-                    elif col_name in ["bedroom", "bathroom", "floor_count"]:
-                        # For room fields, use median which represents typical property
-                        median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
-                        if median_val is None or median_val <= 0:
-                            # Fallback smart defaults if median is invalid
-                            smart_defaults = {
-                                "bedroom": 2,
-                                "bathroom": 1,
-                                "floor_count": 1,
-                            }
-                            default_val = smart_defaults.get(col_name, 1)
-                            df = df.fillna({col_name: default_val})
-                            logger.info(
-                                f"🏠 Imputed {col_name} (room field) with smart default: {default_val}"
-                            )
-                        else:
-                            df = df.fillna({col_name: median_val})
-                            logger.info(
-                                f"🏠 Imputed {col_name} (room field) with median: {median_val}"
-                            )
+                    # elif col_name in ["bedroom", "bathroom", "floor_count"]:
+                    #     # For room fields, use median which represents typical property
+                    #     median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                    #     if median_val is None or median_val <= 0:
+                    #         # Fallback smart defaults if median is invalid
+                    #         smart_defaults = {
+                    #             "bedroom": 2,
+                    #             "bathroom": 1,
+                    #             "floor_count": 1,
+                    #         }
+                    #         default_val = smart_defaults.get(col_name, 1)
+                    #         df = df.fillna({col_name: default_val})
+                    #         logger.info(
+                    #             f"🏠 Imputed {col_name} (room field) with smart default: {default_val}"
+                    #         )
+                    #     else:
+                    #         df = df.fillna({col_name: median_val})
+                    #         logger.info(
+                    #             f"🏠 Imputed {col_name} (room field) with median: {median_val}"
+                    #         )
 
                     # All other numeric fields - use median
-                    else:
-                        # Numeric: use median
-                        median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
-                        df = df.fillna({col_name: median_val})
-                        logger.info(
-                            f"🔢 Imputed {col_name} (numeric) with median: {median_val}"
-                        )
+                    # else:
+                    #     # Numeric: use median
+                    #     median_val = df.approxQuantile(col_name, [0.5], 0.1)[0]
+                    #     df = df.fillna({col_name: median_val})
+                    #     logger.info(
+                    #         f"🔢 Imputed {col_name} (numeric) with median: {median_val}"
+                    #     )
                 else:
                     # String: use "Unknown"
-                    df = df.fillna({col_name: "Unknown"})
+                    df = df.fillna({col_name: "unknown"})
                     logger.info(f"📝 Imputed {col_name} (string) with 'Unknown'")
 
         return df
@@ -752,7 +824,7 @@ class DataCleaner:
         # Filter valid areas
         if "area" in df.columns:
             area_min = config.get("area_min", 5)  # 5 sqm
-            area_max = config.get("area_max", 50000)  # 50,000 sqm
+            area_max = config.get("area_max", 5000)  # 5,000 sqm
 
             before_count = df.count()
             df = df.filter(
@@ -765,6 +837,27 @@ class DataCleaner:
             if before_count != after_count:
                 logger.info(
                     f"🔄 Area filter: removed {before_count - after_count:,} records"
+                )
+
+        # Filter valid floor counts (allow null values)
+        if "floor_count" in df.columns:
+            floor_min = config.get("floor_min", 1)  # 1 floor minimum
+            floor_max = config.get("floor_max", 99)  # 99 floors maximum (reasonable)
+
+            before_count = df.count()
+            df = df.filter(
+                col("floor_count").isNull()  # Allow null values
+                | (
+                    (col("floor_count").isNotNull())
+                    & (col("floor_count") >= floor_min)
+                    & (col("floor_count") <= floor_max)
+                )
+            )
+            after_count = df.count()
+
+            if before_count != after_count:
+                logger.info(
+                    f"🔄 Floor count filter: removed {before_count - after_count:,} records (null values kept)"
                 )
 
         final_count = df.count()
@@ -1015,7 +1108,7 @@ class DataCleaner:
 
         initial_count = df.count()
 
-        # Critical columns that must be valid (CHỈ 5 trường quan trọng nhất)
+        # Critical columns that must be valid (CHỈ 6 trường quan trọng nhất)
         # NOTE: district_id và ward_id KHÔNG nằm trong danh sách này - có thể là -1
         validations = [
             (
@@ -1040,8 +1133,15 @@ class DataCleaner:
                 "province_id",
                 lambda x: (col(x).isNotNull())
                 & (col(x) >= 1)
-                & (col(x) <= 96)
+                & (col(x) <= 63)
                 & (col(x) != -1),
+            ),
+            (
+                "floor_count",
+                lambda x: col(x).isNull()
+                | (  # Allow null values
+                    (col(x).isNotNull()) & (col(x) >= 1) & (col(x) <= 99)
+                ),
             ),
         ]
 
