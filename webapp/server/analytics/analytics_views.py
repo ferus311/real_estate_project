@@ -72,36 +72,62 @@ def get_price_distribution_by_location(request):
             avg_area=Avg("area"),
         )
 
-        # Calculate price distribution (bins)
+        # Calculate smart price distribution (total price in billions)
         min_price = float(stats["min_price"])
         max_price = float(stats["max_price"])
-        price_range = max_price - min_price
-        bin_size = price_range / 10  # 10 bins
 
+        # Convert to billions for better readability
+        min_price_billions = min_price / 1_000_000_000
+        max_price_billions = max_price / 1_000_000_000
+
+        # Smart binning for total price based on typical real estate prices (in billions VND)
         price_distribution = []
-        for i in range(10):
-            bin_min = min_price + (i * bin_size)
-            bin_max = min_price + ((i + 1) * bin_size)
 
-            count = properties.filter(
-                price__gte=bin_min, price__lt=bin_max if i < 9 else price_range + 1
-            ).count()
+        if max_price_billions <= 10:  # Low-end market
+            ranges = [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10)]
+        elif max_price_billions <= 20:  # Mid-range market
+            ranges = [(0, 3), (3, 6), (6, 10), (10, 15), (15, 20)]
+        elif max_price_billions <= 50:  # High-end market
+            ranges = [(0, 5), (5, 10), (10, 20), (20, 35), (35, 50)]
+        else:  # Luxury market
+            ranges = [(0, 10), (10, 25), (25, 50), (50, 100), (100, float("inf"))]
 
-            price_distribution.append(
-                {
-                    "range": f"{bin_min/1_000_000:.1f}B - {bin_max/1_000_000:.1f}B VND",
-                    "min_price": bin_min,
-                    "max_price": bin_max,
-                    "count": count,
-                    "percentage": (
-                        round((count / stats["total_count"]) * 100, 1)
-                        if stats["total_count"] > 0
-                        else 0
-                    ),
-                }
+        # Filter ranges to only include those with data
+        for range_min, range_max in ranges:
+            # Convert back to VND for filtering
+            bin_min = range_min * 1_000_000_000
+            bin_max = (
+                range_max * 1_000_000_000 if range_max != float("inf") else float("inf")
             )
 
-        # Calculate price per m2 distribution
+            if bin_max == float("inf"):
+                count = properties.filter(price__gte=bin_min).count()
+            else:
+                count = properties.filter(price__gte=bin_min, price__lt=bin_max).count()
+
+            # Only include ranges that have properties
+            if count > 0:
+                # Format range display in billions
+                if range_max == float("inf"):
+                    range_text = f"Trên {range_min:.0f} tỷ VND"
+                else:
+                    range_text = f"{range_min:.0f} - {range_max:.0f} tỷ VND"
+
+                price_distribution.append(
+                    {
+                        "range": range_text,
+                        "min_price": bin_min,
+                        "max_price": bin_max if bin_max != float("inf") else max_price,
+                        "count": count,
+                        "percentage": (
+                            round((count / stats["total_count"]) * 100, 1)
+                            if stats["total_count"] > 0
+                            else 0
+                        ),
+                    }
+                )
+
+        # Calculate price per m2 distribution with smart binning
         properties_with_calc = []
         for prop in properties:
             if prop.area and prop.area > 0:
@@ -109,48 +135,75 @@ def get_price_distribution_by_location(request):
                 properties_with_calc.append(price_per_m2)
 
         if properties_with_calc:
+            properties_with_calc.sort()
             min_price_m2 = min(properties_with_calc)
             max_price_m2 = max(properties_with_calc)
-            range_m2 = max_price_m2 - min_price_m2
-            bin_size_m2 = range_m2 / 10
 
+            # Convert to millions for better readability
+            min_price_m2_millions = min_price_m2 / 1_000_000
+            max_price_m2_millions = max_price_m2 / 1_000_000
+
+            # Smart binning - create meaningful price ranges
             price_per_m2_distribution = []
-            for i in range(10):
-                bin_min = min_price_m2 + (i * bin_size_m2)
-                bin_max = min_price_m2 + ((i + 1) * bin_size_m2)
 
-                # Get values in this bin
-                bin_values = [
-                    p
-                    for p in properties_with_calc
-                    if bin_min <= p < (bin_max if i < 9 else max_price_m2 + 1)
+            # Define smart price ranges based on typical real estate prices (in millions VND/m²)
+            if max_price_m2_millions <= 50:  # Low-end market
+                ranges = [(0, 10), (10, 20), (20, 30), (30, 40), (40, 50)]
+            elif max_price_m2_millions <= 100:  # Mid-range market
+                ranges = [(0, 15), (15, 30), (30, 50), (50, 70), (70, 100)]
+            elif max_price_m2_millions <= 200:  # High-end market
+                ranges = [(0, 30), (30, 60), (60, 100), (100, 150), (150, 200)]
+            else:  # Luxury market
+                ranges = [
+                    (0, 50),
+                    (50, 100),
+                    (100, 200),
+                    (200, 300),
+                    (300, float("inf")),
                 ]
 
-                count = len(bin_values)
-                avg_price_per_m2 = sum(bin_values) / count if count > 0 else 0
-
-                # Format range display nicely
-                if bin_min >= 1_000_000:  # >= 1M
-                    range_text = (
-                        f"{bin_min/1_000_000:.1f}M - {bin_max/1_000_000:.1f}M VND/m²"
-                    )
-                elif bin_min >= 1_000:  # >= 1K
-                    range_text = f"{bin_min/1_000:.0f}K - {bin_max/1_000:.0f}K VND/m²"
-                else:
-                    range_text = f"{bin_min:.0f} - {bin_max:.0f} VND/m²"
-
-                price_per_m2_distribution.append(
-                    {
-                        "range": range_text,
-                        "min_price_per_m2": bin_min,
-                        "max_price_per_m2": bin_max,
-                        "avg_price_per_m2": avg_price_per_m2,
-                        "count": count,
-                        "percentage": round(
-                            (count / len(properties_with_calc)) * 100, 1
-                        ),
-                    }
+            # Filter ranges to only include those with data
+            for range_min, range_max in ranges:
+                # Convert back to VND for filtering
+                bin_min = range_min * 1_000_000
+                bin_max = (
+                    range_max * 1_000_000 if range_max != float("inf") else float("inf")
                 )
+
+                # Get values in this bin
+                if bin_max == float("inf"):
+                    bin_values = [p for p in properties_with_calc if p >= bin_min]
+                else:
+                    bin_values = [
+                        p for p in properties_with_calc if bin_min <= p < bin_max
+                    ]
+
+                count = len(bin_values)
+
+                # Only include ranges that have properties
+                if count > 0:
+                    avg_price_per_m2 = sum(bin_values) / count
+
+                    # Format range display in millions
+                    if range_max == float("inf"):
+                        range_text = f"Trên {range_min:.0f} triệu VND/m²"
+                    else:
+                        range_text = f"{range_min:.0f} - {range_max:.0f} triệu VND/m²"
+
+                    price_per_m2_distribution.append(
+                        {
+                            "range": range_text,
+                            "min_price_per_m2": bin_min,
+                            "max_price_per_m2": (
+                                bin_max if bin_max != float("inf") else max_price_m2
+                            ),
+                            "avg_price_per_m2": avg_price_per_m2,
+                            "count": count,
+                            "percentage": round(
+                                (count / len(properties_with_calc)) * 100, 1
+                            ),
+                        }
+                    )
         else:
             price_per_m2_distribution = []
 
@@ -255,19 +308,40 @@ def get_market_overview(request):
             .order_by("-property_count")[:10]
         )
 
-        # Price ranges analysis
+        # Smart price ranges analysis based on market data
         min_price = float(total_stats["min_price"])
         max_price = float(total_stats["max_price"])
+        max_price_billions = max_price / 1_000_000_000
 
-        price_ranges = [
-            {"range": "Dưới 2 tỷ", "min": 0, "max": 2_000_000_000},
-            {"range": "2-5 tỷ", "min": 2_000_000_000, "max": 5_000_000_000},
-            {"range": "5-10 tỷ", "min": 5_000_000_000, "max": 10_000_000_000},
-            {"range": "10-20 tỷ", "min": 10_000_000_000, "max": 20_000_000_000},
-            {"range": "Trên 20 tỷ", "min": 20_000_000_000, "max": float("inf")},
-        ]
+        # Define smart ranges based on actual market conditions
+        if max_price_billions <= 15:  # Low-end market
+            price_ranges_def = [
+                {"range": "Dưới 2 tỷ", "min": 0, "max": 2_000_000_000},
+                {"range": "2-4 tỷ", "min": 2_000_000_000, "max": 4_000_000_000},
+                {"range": "4-7 tỷ", "min": 4_000_000_000, "max": 7_000_000_000},
+                {"range": "7-12 tỷ", "min": 7_000_000_000, "max": 12_000_000_000},
+                {"range": "Trên 12 tỷ", "min": 12_000_000_000, "max": float("inf")},
+            ]
+        elif max_price_billions <= 30:  # Mid-range market
+            price_ranges_def = [
+                {"range": "Dưới 3 tỷ", "min": 0, "max": 3_000_000_000},
+                {"range": "3-6 tỷ", "min": 3_000_000_000, "max": 6_000_000_000},
+                {"range": "6-12 tỷ", "min": 6_000_000_000, "max": 12_000_000_000},
+                {"range": "12-20 tỷ", "min": 12_000_000_000, "max": 20_000_000_000},
+                {"range": "Trên 20 tỷ", "min": 20_000_000_000, "max": float("inf")},
+            ]
+        else:  # High-end market
+            price_ranges_def = [
+                {"range": "Dưới 5 tỷ", "min": 0, "max": 5_000_000_000},
+                {"range": "5-15 tỷ", "min": 5_000_000_000, "max": 15_000_000_000},
+                {"range": "15-30 tỷ", "min": 15_000_000_000, "max": 30_000_000_000},
+                {"range": "30-50 tỷ", "min": 30_000_000_000, "max": 50_000_000_000},
+                {"range": "Trên 50 tỷ", "min": 50_000_000_000, "max": float("inf")},
+            ]
 
-        for price_range in price_ranges:
+        # Only include ranges that have data
+        price_ranges = []
+        for price_range in price_ranges_def:
             if price_range["max"] == float("inf"):
                 count = properties.filter(price__gte=price_range["min"]).count()
             else:
@@ -275,12 +349,21 @@ def get_market_overview(request):
                     price__gte=price_range["min"], price__lt=price_range["max"]
                 ).count()
 
-            price_range["count"] = count
-            price_range["percentage"] = (
-                round((count / total_stats["total_count"]) * 100, 1)
-                if total_stats["total_count"] > 0
-                else 0
-            )
+            # Only include ranges with properties
+            if count > 0:
+                price_ranges.append(
+                    {
+                        "range": price_range["range"],
+                        "min": price_range["min"],
+                        "max": price_range["max"],
+                        "count": count,
+                        "percentage": (
+                            round((count / total_stats["total_count"]) * 100, 1)
+                            if total_stats["total_count"] > 0
+                            else 0
+                        ),
+                    }
+                )
 
         return Response(
             {

@@ -1,215 +1,102 @@
-# Hệ thống Crawler Bất Động Sản
+# Hệ thống Dự đoán Giá Bất động sản
 
-Hệ thống thu thập, xử lý và phân tích dữ liệu bất động sản từ nhiều nguồn khác nhau, sử dụng kiến trúc microservices và các công nghệ hiện đại như Docker, Airflow, Kafka, HDFS và Spark.
+**Bạn có bao giờ thắc mắc liệu căn nhà mình muốn mua có phù hợp với số tiền mình bỏ ra hay không?**
 
-## Kiến trúc hệ thống
+Dự án này được sinh ra từ một nhu cầu thực tế: giúp người mua bất động sản đưa ra quyết định thông minh hơn dựa trên dữ liệu thực tế từ thị trường. Thay vì dựa vào cảm tính hay kinh nghiệm, bạn sẽ có một "cố vấn AI" dựa trên phân tích hàng trăm ngàn tin đăng thực tế.
 
-Hệ thống bao gồm các thành phần chính sau:
+## 🎯 Mục tiêu của dự án
 
-### 1. Crawlers
+**Thu thập** → **Xử lý"** → **Phân tích** → **Dự đoán** → **Hỗ trợ quyết định**
 
-Thu thập dữ liệu từ các nguồn khác nhau:
+-   **Thu thập dữ liệu thông minh**: Tự động lấy thông tin từ các sàn BDS lớn (Batdongsan.com.vn, Chotot.vn) 24/7
+-   **Dự đoán giá chính xác**: Sử dụng Gradient Boosting để đưa ra mức giá hợp lý dựa trên vị trí, diện tích, và đặc điểm bất động sản
+-   **Thông tin minh bạch**: Cung cấp dashboard trực quan với biểu đồ, xu hướng giá theo khu vực và thời gian
+-   **Hỗ trợ quyết định**: Giúp người dùng biết được một căn nhà có đắt hay rẻ so với thị trường
 
--   **BaseListCrawler**: Interface cho crawler danh sách
--   **BaseDetailCrawler**: Interface cho crawler chi tiết
--   **BaseApiCrawler**: Interface cho crawler API
--   **BatdongsanListCrawler**: Crawler danh sách Batdongsan
--   **BatdongsanDetailCrawler**: Crawler chi tiết Batdongsan
--   **ChototApiCrawler**: Crawler API cho Chotot
+## 🏗️ Kiến trúc hệ thống
 
-### 2. Services
-
-Quản lý quy trình thu thập và xử lý dữ liệu:
-
--   **ListCrawlerService**: Thu thập danh sách URL
--   **DetailCrawlerService**: Thu thập chi tiết từ URL
--   **StorageService**: Lưu trữ dữ liệu
--   **RetryService**: Xử lý các URL thất bại
--   **ReportService**: Tạo báo cáo thu thập dữ liệu
-
-### 3. Storage
-
-Hệ thống lưu trữ dữ liệu:
-
--   **BaseStorage**: Interface cho hệ thống lưu trữ
--   **LocalStorage**: Lưu trữ trên filesystem
--   **HDFSStorage**: Lưu trữ trên HDFS
-
-### 4. Data Processing
-
-Xử lý và phân tích dữ liệu:
-
--   **Data Cleaning**: Làm sạch và chuẩn hóa dữ liệu
--   **Data Integration**: Tích hợp dữ liệu từ nhiều nguồn
--   **Analytics**: Phân tích dữ liệu và tạo báo cáo
--   **Machine Learning**: Huấn luyện mô hình dự đoán giá
-
-### 5. Airflow DAGs
-
-Điều phối và tự động hóa quy trình:
-
--   **realestate_crawler_dag**: Thu thập dữ liệu bất động sản
--   **realestate_data_processing_dag**: Xử lý dữ liệu bằng Spark
--   **realestate_ml_dag**: Huấn luyện mô hình ML
--   **realestate_monitoring_dag**: Giám sát chất lượng dữ liệu
--   **realestate_api_dag**: Cập nhật dữ liệu cho API
--   **realestate_full_pipeline_dag**: Điều phối toàn bộ quy trình
-
-## Cài đặt và chạy
-
-### Yêu cầu hệ thống
-
--   Docker và Docker Compose
--   Ít nhất 16GB RAM
--   50GB dung lượng ổ cứng
-
-### Cài đặt
-
-1. Clone repository:
-
-```bash
-git clone https://github.com/your-username/realestate-crawler.git
-cd realestate-crawler
-```
-
-2. Khởi tạo các thư mục cần thiết:
-
-```bash
-./scripts/init_volumes.sh
-```
-
-3. Khởi động hệ thống:
-
-```bash
-./scripts/start_all.sh
-```
-
-### Sử dụng
-
-#### Chạy crawler thủ công
-
-```bash
-# Chạy crawler Batdongsan
-./scripts/run_crawler_jobs.sh batdongsan both
-
-# Chạy crawler Chotot
-./scripts/run_crawler_jobs.sh chotot both
-
-# Chạy tất cả các crawler
-./scripts/run_crawler_jobs.sh all both
-```
-
-#### Chạy Spark jobs thủ công
-
-```bash
-# Chạy job làm sạch dữ liệu
-./scripts/run_spark_jobs.sh data_cleaning 2023-06-01
-
-# Chạy job huấn luyện mô hình
-./scripts/run_spark_jobs.sh ml 2023-06-01
-
-# Chạy toàn bộ quy trình xử lý
-./scripts/run_spark_jobs.sh all 2023-06-01
-```
-
-#### Truy cập các giao diện
-
--   **Airflow UI**: http://localhost:8080 (user/pass: admin/admin)
--   **HDFS UI**: http://localhost:9870
--   **Spark UI**: http://localhost:8181
--   **Jupyter Notebook**: http://localhost:8888
-
-### Dừng hệ thống
-
-```bash
-./scripts/stop_all.sh
-```
-
-## Cấu trúc thư mục
+### Pipeline tự động hoàn chỉnh
 
 ```
-real_estate_project/
-├── crawler/
-│   ├── common/
-│   │   ├── base/
-│   │   ├── factory/
-│   │   ├── storage/
-|   |   ├── queue/kafka_client.py
-|   |   └── models/
-│   ├── services/
-│   │   ├── list_crawler/
-│   │   ├── detail_crawler/
-│   │   └── storage_service/
-│   └── sources/
-│       ├── batdongsan/
-│       └── chotot/
-├── data_processing/
-│   ├── airflow/
-│   │   └── dags/
-│   ├── notebooks/
-│   ├── spark/
-│   │   └── jobs/
-│   └── ml/
-├── docker/
-│   ├── yml/
-│   │   ├── airflow.yml
-│   │   ├── crawler.yml
-│   │   ├── hdfs.yml
-│   │   ├── kafka.yml
-│   │   └── spark.yml
-│   └── hadoop.env
-└── scripts/
-    ├── init_volumes.sh
-    ├── start_all.sh
-    ├── stop_all.sh
-    ├── run_crawler_jobs.sh
-    └── run_spark_jobs.sh
+📊 Nguồn dữ liệu → 🕷️ Crawler → 🔄 Airflow → 📦 Hadoop/HDFS → ⚡ Spark → 🤖 ML Model → 🌐 Website
 ```
 
-## Mô hình dữ liệu
+**1. Thu thập dữ liệu (Data Collection)**
 
-Dữ liệu bất động sản được lưu trữ với các trường chính:
+-   Crawler tự động chạy định kỳ với Apache Airflow
+-   Thu thập từ Batdongsan và Chotot với khả năng mở rộng
+-   Lưu trữ an toàn trên Hadoop HDFS
 
--   **url**: URL của bài đăng
--   **title**: Tiêu đề bài đăng
--   **price**: Giá bất động sản
--   **area**: Diện tích (m²)
--   **location**: Vị trí (tỉnh/thành phố, quận/huyện)
--   **description**: Mô tả chi tiết
--   **features**: Các tính năng của bất động sản
--   **contact**: Thông tin liên hệ
--   **post_time**: Thời gian đăng bài
--   **crawl_time**: Thời gian thu thập
+**2. Xử lý dữ liệu (Data Processing)**
 
-## Quy trình xử lý dữ liệu
+-   Làm sạch và chuẩn hóa dữ liệu với Apache Spark
+-   Xử lý địa chỉ, diện tích, giá cả từ nhiều định dạng khác nhau
+-   Tạo features engineering cho machine learning
 
-1. **Thu thập dữ liệu**:
+**3. Machine Learning**
 
-    - Crawl danh sách URL từ các trang nguồn
-    - Crawl chi tiết từ các URL đã thu thập
-    - Lưu trữ dữ liệu thô vào HDFS
+-   Sử dụng Gradient Boosting để dự đoán giá
+-   Liên tục cập nhật mô hình với dữ liệu mới
+-   Đánh giá độ chính xác và tối ưu hóa
 
-2. **Xử lý dữ liệu**:
+**4. Giao diện người dùng**
 
-    - Làm sạch và chuẩn hóa dữ liệu
-    - Tích hợp dữ liệu từ nhiều nguồn
-    - Phân tích và tạo các chỉ số thống kê
+-   Website tương tác thân thiện
+-   Nhập thông tin → Nhận dự đoán giá
+-   Dashboard thống kê thị trường real-time
 
-3. **Huấn luyện mô hình**:
+## 💡 Giá trị thực tiếng
 
-    - Chuẩn bị dữ liệu huấn luyện
-    - Huấn luyện mô hình dự đoán giá
-    - Đánh giá và triển khai mô hình
+**Cho người mua nhà:**
 
-4. **Giám sát và báo cáo**:
-    - Giám sát chất lượng dữ liệu
-    - Tạo báo cáo thu thập dữ liệu
-    - Gửi thông báo qua Slack
+-   Biết được mức giá hợp lý trước khi đàm phán
+-   Tránh bị "chặt chém" bởi các môi giới
+-   So sánh giá giữa các khu vực
 
-## Đóng góp
+**Cho nhà đầu tư:**
 
-Vui lòng đọc [CONTRIBUTING.md](CONTRIBUTING.md) để biết chi tiết về quy trình đóng góp.
+-   Phát hiện cơ hội đầu tư tiềm năng
+-   Theo dõi xu hướng giá theo thời gian
+-   Đánh giá ROI của các khu vực
 
-## Giấy phép
+**Cho người bán:**
 
-Dự án này được cấp phép theo giấy phép MIT - xem tệp [LICENSE](LICENSE) để biết chi tiết.
+-   Định giá nhà đất một cách khách quan
+-   Thời điểm tốt nhất để bán
+
+## 🛠️ Công nghệ sử dụng
+
+**Thu thập, Xử lý và Lưu trữ dữ liệu:**
+
+-   **Apache Airflow**: Điều phối pipeline tự động
+-   **Kafka**: Message queue cho real-time processing
+-   **Apache Hadoop/HDFS**: Lưu trữ đáp ứng với lượng dữ liệu khổng lồ
+-   **Apache Spark**: Xử lý dữ liệu quy mô lớn
+-   **Playwright**: Crawler nhanh chóng, phù hợp với trang web động
+-   **Gradient Boosting**: Thuật toán dự đoán chính
+
+**Website & Deployment:**
+-   **React.js**: Giao diện website modern
+-   **Django**: Cung cấp api tương thích mạnh mẽ với các thư viện python
+-   **Docker**: Containerization toàn bộ hệ thống
+
+## 📈 Dữ liệu thu thập được
+
+Mỗi bất động sản được lưu trữ với thông tin chi tiết:
+
+-   **Vị trí**: Tỉnh/thành, quận/huyện, phường/xã
+-   **Đặc điểm**: Diện tích, số phòng, hướng nhà
+-   **Giá cả**: Giá rao bán, giá/m²
+-   **Thời gian**: Ngày đăng, xu hướng giá
+-   **Mô tả**: Chi tiết về tình trạng, nội thất
+
+## 🎮 Trải nghiệm người dùng
+
+1. **Nhập thông tin căn nhà** bạn quan tâm
+2. **Nhận dự đoán giá** dựa trên AI trong vài giây
+3. **Xem biểu đồ so sánh** với khu vực lân cận
+4. **Theo dõi xu hướng** giá cả theo thời gian
+5. **Đưa ra quyết định** mua/bán thông minh hơn
+
+---
+

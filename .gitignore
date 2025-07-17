@@ -8,7 +8,10 @@
 **/volumes/crawler/
 **/venv/
 **/node_modules/
-
+**/scripts/
+**/.env
+**/notebooks/*
+**/.env.local
 # Logs
 logs
 *.log
